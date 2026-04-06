@@ -1,0 +1,54 @@
+name: quiz_battle
+description: Live Quiz Battle — real-time multiplayer quiz app
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ── gRPC & Protobuf ───────────────────────────────────────────
+  grpc: ^3.2.4                    # gRPC client (server streaming support)
+  protobuf: ^3.1.0                # generated proto message classes
+  fixnum: ^1.1.0                  # Int64 type used in proto messages
+
+  # ── State Management ──────────────────────────────────────────
+  flutter_riverpod: ^2.5.1        # Riverpod for Flutter widgets
+  riverpod_annotation: ^2.3.5     # @riverpod code-gen annotations
+
+  # ── Navigation ────────────────────────────────────────────────
+  go_router: ^13.2.0              # declarative routing
+
+  # ── Animations ────────────────────────────────────────────────
+  animations: ^2.0.11             # Material motion transitions
+  flutter_animate: ^4.5.0         # chainable animation helpers
+
+  # ── Utilities ─────────────────────────────────────────────────
+  freezed_annotation: ^2.4.1      # immutable model classes
+  json_annotation: ^4.9.0         # JSON serialisation
+  equatable: ^2.0.5               # value equality for models
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.9            # code generation runner
+  riverpod_generator: ^2.4.0      # generates @riverpod providers
+  freezed: ^2.5.2                 # generates immutable classes
+  json_serializable: ^6.8.0       # generates fromJson/toJson
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+  # fonts:
+  #   - family: Inter
+  #     fonts:
+  #       - asset: assets/fonts/Inter-Regular.ttf
+  #       - asset: assets/fonts/Inter-SemiBold.ttf
+  #         weight: 600
+  #       - asset: assets/fonts/Inter-Bold.ttf
+  #         weight: 700

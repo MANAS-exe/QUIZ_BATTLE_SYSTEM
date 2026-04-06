@@ -12,12 +12,25 @@ import (
 )
 
 const (
-	exchangeName     = "sx"              // single topic exchange for all events
-	exchangeType     = "topic"
-	keyMatchCreated  = "match.created"   // routing key consumed by Room Service
-	keyRoundCompleted = "round.completed" // routing key for round-end scoring
-	keyMatchFinished  = "match.finished"  // routing key for match-end persistence
+	exchangeName      = "sx"               // single topic exchange for all events
+	exchangeType      = "topic"
+	keyMatchCreated   = "match.created"    // routing key consumed by Room Service
+	keyAnswerSubmitted = "answer.submitted" // routing key consumed by answer consumer
+	keyRoundCompleted = "round.completed"  // routing key for round-end scoring
+	keyMatchFinished  = "match.finished"   // routing key for match-end persistence
 )
+
+// AnswerSubmittedEvent is published by SubmitAnswer gRPC and consumed by
+// the answer consumer (rabbitmq/consumer.go) to validate and score the answer.
+type AnswerSubmittedEvent struct {
+	RoomID           string `json:"room_id"`
+	UserID           string `json:"user_id"`
+	RoundNumber      int    `json:"round_number"`
+	QuestionID       string `json:"question_id"`
+	AnswerIndex      int    `json:"answer_index"`
+	SubmittedAtMs    int64  `json:"submitted_at_ms"`
+	RoundStartedAtMs int64  `json:"round_started_at_ms"` // set by consumer after round.completed
+}
 
 // Publisher holds a single AMQP connection and channel.
 // For production, consider a reconnect loop — see TODO below.
@@ -191,6 +204,34 @@ func (p *Publisher) PublishMatchFinished(roomID string, totalRounds int) error {
 	}
 
 	log.Printf("🏁 Published match.finished — room: %s total rounds: %d", roomID, totalRounds)
+	return nil
+}
+
+// PublishAnswerSubmitted fires an answer.submitted event so the consumer can
+// validate the answer, calculate the score, and update the Redis leaderboard.
+func (p *Publisher) PublishAnswerSubmitted(event AnswerSubmittedEvent) error {
+	body, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal answer.submitted: %w", err)
+	}
+
+	if err := p.channel.Publish(
+		exchangeName,
+		keyAnswerSubmitted,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Timestamp:    time.Now(),
+			Body:         body,
+		},
+	); err != nil {
+		return fmt.Errorf("publish answer.submitted: %w", err)
+	}
+
+	log.Printf("📩 Published answer.submitted — room: %s user: %s round: %d idx: %d",
+		event.RoomID, event.UserID, event.RoundNumber, event.AnswerIndex)
 	return nil
 }
 

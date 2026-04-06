@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/gomodule/redigo/redis"
 	quiz "github.com/yourorg/quiz-battle/proto/quiz"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -17,12 +17,11 @@ import (
 	"quiz-battle/matchmaking/rabbitmq"
 )
 
-const mongoURI = "mongodb://localhost:27017/quizdb"
-
 // ─────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────
 
+// Question is the MongoDB document shape for the questions collection.
 type Question struct {
 	ID              primitive.ObjectID `bson:"_id"`
 	Text            string             `bson:"text"`
@@ -38,34 +37,24 @@ type MatchHistory struct {
 }
 
 // ─────────────────────────────────────────
-// MAIN FUNCTION
+// QUESTION SELECTION
 // ─────────────────────────────────────────
 
-func SelectQuestionsForRoom(roomID string, players []string, count int) ([]string, error) {
+// SelectQuestionsForRoom samples questions from MongoDB (avoiding previously seen ones)
+// and stores the ordered list in Redis under room:{id}:questions.
+func SelectQuestionsForRoom(pool *goredis.Pool, db *mongo.Database, roomID string, players []string, count int) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// 1. Connect to MongoDB
-	mongoClient, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, fmt.Errorf("mongo connect: %w", err)
-	}
-	defer mongoClient.Disconnect(ctx) //nolint:errcheck
-
-	db := mongoClient.Database("quizdb")
-
-	// 2. Find question IDs already seen by these players
 	seenIDs, err := fetchSeenQuestionIDs(ctx, db, players)
 	if err != nil {
 		return nil, fmt.Errorf("fetch seen questions: %w", err)
 	}
 
-	// 3. Calculate per-difficulty counts (40 / 40 / 20)
 	easy := int(math.Round(float64(count) * 0.40))
 	medium := int(math.Round(float64(count) * 0.40))
 	hard := count - easy - medium
 
-	// 4. Sample questions per difficulty
 	type pick struct {
 		difficulty string
 		n          int
@@ -89,12 +78,156 @@ func SelectQuestionsForRoom(roomID string, players []string, count int) ([]strin
 		return nil, fmt.Errorf("no questions returned — check your questions collection")
 	}
 
-	// 5. Store in Redis as room:{id}:questions
-	if err := storeQuestionsInRedis(ctx, roomID, questionIDs); err != nil {
+	if err := storeQuestionsInRedis(pool, roomID, questionIDs); err != nil {
 		return nil, fmt.Errorf("redis store: %w", err)
 	}
 
 	return questionIDs, nil
+}
+
+// ─────────────────────────────────────────
+// QUIZ SERVICE — round orchestration
+// ─────────────────────────────────────────
+
+// BroadcastFn sends a GameEvent to all connected clients in the room.
+// It is non-blocking: implementations should drop events for slow consumers.
+type BroadcastFn func(event *quiz.GameEvent)
+
+// QuizService drives round execution for a single room.
+// Construct once and call RunRound for each round in sequence.
+type QuizService struct {
+	rdb       *goredis.Pool
+	mongoDB   *mongo.Database
+	publisher *rabbitmq.Publisher
+}
+
+func NewQuizService(rdb *goredis.Pool, mongoDB *mongo.Database, pub *rabbitmq.Publisher) *QuizService {
+	return &QuizService{rdb: rdb, mongoDB: mongoDB, publisher: pub}
+}
+
+// RunRound executes one quiz round end-to-end:
+//
+//  1. Pops the next question ID from the Redis LIST  room:{id}:questions
+//  2. Fetches the full question document from MongoDB
+//  3. Broadcasts QuestionBroadcast to all connected clients via broadcast()
+//  4. Runs a 30-second server-side countdown, emitting TimerSync every second
+//  5. Exits early if all players have already answered
+//  6. Publishes "round.completed" to RabbitMQ (triggers scoring + reveal)
+//  7. If no questions remain, publishes "match.finished"
+func (s *QuizService) RunRound(
+	ctx context.Context,
+	roomID string,
+	roundNum int,
+	broadcast BroadcastFn,
+) error {
+	conn := s.rdb.Get()
+	defer conn.Close()
+
+	// ── 1. Pop next question ID ────────────────────────────────────────────────
+	questionsKey := fmt.Sprintf("room:%s:questions", roomID)
+	questionID, err := goredis.String(conn.Do("LPOP", questionsKey))
+	if err != nil {
+		return fmt.Errorf("pop question (room %s round %d): %w", roomID, roundNum, err)
+	}
+
+	// ── 2. Fetch question from MongoDB ─────────────────────────────────────────
+	questionOID, err := primitive.ObjectIDFromHex(questionID)
+	if err != nil {
+		return fmt.Errorf("invalid question ID %q: %w", questionID, err)
+	}
+
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer fetchCancel()
+
+	var q Question
+	if err := s.mongoDB.Collection("questions").
+		FindOne(fetchCtx, bson.M{"_id": questionOID}).Decode(&q); err != nil {
+		return fmt.Errorf("fetch question %s: %w", questionID, err)
+	}
+
+	// ── 3. Broadcast QuestionBroadcast ─────────────────────────────────────────
+	const roundDuration = 30 * time.Second
+	deadline := time.Now().Add(roundDuration)
+	deadlineMs := deadline.UnixMilli()
+	roundStartedAtMs := time.Now().UnixMilli()
+
+	broadcast(&quiz.GameEvent{
+		Event: &quiz.GameEvent_Question{
+			Question: &quiz.QuestionBroadcast{
+				RoundNumber: int32(roundNum),
+				Question: &quiz.Question{
+					QuestionId:  questionID,
+					Text:        q.Text,
+					Options:     q.Options,
+					Difficulty:  difficultyFromString(q.Difficulty),
+					Topic:       q.Topic,
+					TimeLimitMs: int32(roundDuration.Milliseconds()),
+				},
+				DeadlineMs: deadlineMs,
+			},
+		},
+	})
+
+	// ── 4 & 5. Server-side countdown with early-exit on all-answered ───────────
+	playerCountKey := fmt.Sprintf("room:%s:players", roomID)
+	playerCount, err := goredis.Int64(conn.Do("HLEN", playerCountKey))
+	if err != nil {
+		return fmt.Errorf("get player count: %w", err)
+	}
+	answersKey := fmt.Sprintf("room:%s:answers:%d", roomID, roundNum)
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	timer := time.NewTimer(roundDuration)
+	defer timer.Stop()
+
+timerLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-timer.C:
+			break timerLoop
+
+		case <-ticker.C:
+			broadcast(&quiz.GameEvent{
+				Event: &quiz.GameEvent_TimerSync{
+					TimerSync: &quiz.TimerSync{
+						RoundNumber:  int32(roundNum),
+						ServerTimeMs: time.Now().UnixMilli(),
+						DeadlineMs:   deadlineMs,
+					},
+				},
+			})
+
+			answered, err := goredis.Int64(conn.Do("HLEN", answersKey))
+			if err == nil && answered >= playerCount {
+				break timerLoop
+			}
+		}
+	}
+
+	// ── 6. Publish round.completed ─────────────────────────────────────────────
+	if err := s.publisher.PublishRoundCompleted(
+		roomID, roundNum, questionID, q.CorrectIndex, roundStartedAtMs,
+	); err != nil {
+		// Non-fatal — log and continue so remaining rounds are not blocked
+		log.Printf("WARN publish round.completed room=%s round=%d: %v", roomID, roundNum, err)
+	}
+
+	// ── 7. Publish match.finished when no questions remain ─────────────────────
+	remaining, err := goredis.Int64(conn.Do("LLEN", questionsKey))
+	if err != nil {
+		log.Printf("WARN check remaining questions room=%s: %v", roomID, err)
+	}
+	if remaining == 0 {
+		if err := s.publisher.PublishMatchFinished(roomID, roundNum); err != nil {
+			log.Printf("WARN publish match.finished room=%s: %v", roomID, err)
+		}
+	}
+
+	return nil
 }
 
 // ─────────────────────────────────────────
@@ -103,10 +236,7 @@ func SelectQuestionsForRoom(roomID string, players []string, count int) ([]strin
 
 func fetchSeenQuestionIDs(ctx context.Context, db *mongo.Database, players []string) ([]string, error) {
 	col := db.Collection("match_history")
-
-	filter := bson.M{
-		"players.userId": bson.M{"$in": players},
-	}
+	filter := bson.M{"players.userId": bson.M{"$in": players}}
 	findOpts := options.Find().SetProjection(bson.M{"questionIds": 1, "_id": 0})
 
 	cursor, err := col.Find(ctx, filter, findOpts)
@@ -158,18 +288,12 @@ func sampleQuestions(
 	}
 
 	pipeline := mongo.Pipeline{
-		{
-			{Key: "$match", Value: bson.M{
-				"difficulty": difficulty,
-				"_id":        bson.M{"$nin": excludeIDs},
-			}},
-		},
-		{
-			{Key: "$sample", Value: bson.M{"size": n}},
-		},
-		{
-			{Key: "$project", Value: bson.M{"_id": 1}},
-		},
+		{{Key: "$match", Value: bson.M{
+			"difficulty": difficulty,
+			"_id":        bson.M{"$nin": excludeIDs},
+		}}},
+		{{Key: "$sample", Value: bson.M{"size": n}}},
+		{{Key: "$project", Value: bson.M{"_id": 1}}},
 	}
 
 	cursor, err := col.Aggregate(ctx, pipeline)
@@ -191,194 +315,45 @@ func sampleQuestions(
 	if err := cursor.Err(); err != nil {
 		return nil, err
 	}
-
 	return ids, nil
 }
 
-func storeQuestionsInRedis(ctx context.Context, roomID string, questionIDs []string) error {
-	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
-	defer rdb.Close() //nolint:errcheck
+func storeQuestionsInRedis(pool *goredis.Pool, roomID string, questionIDs []string) error {
+	conn := pool.Get()
+	defer conn.Close()
 
 	key := fmt.Sprintf("room:%s:questions", roomID)
 
-	// RPush accepts ...interface{} — convert the slice
-	args := make([]any, len(questionIDs))
-	for i, id := range questionIDs {
-		args[i] = id
+	if err := conn.Send("DEL", key); err != nil {
+		return err
 	}
 
-	pipe := rdb.Pipeline()
-	pipe.Del(ctx, key)
-	pipe.RPush(ctx, key, args...)
-	pipe.Expire(ctx, key, 30*time.Minute)
-
-	_, err := pipe.Exec(ctx)
-	return err
-}
-
-// ─────────────────────────────────────────
-// QUIZ SERVICE — round orchestration
-// ─────────────────────────────────────────
-
-// QuizService drives round execution for a single room.
-// Construct once per room and call RunRound for each round in sequence.
-type QuizService struct {
-	rdb       *redis.Client
-	mongoDB   *mongo.Database
-	publisher *rabbitmq.Publisher
-}
-
-func NewQuizService(rdb *redis.Client, mongoDB *mongo.Database, pub *rabbitmq.Publisher) *QuizService {
-	return &QuizService{rdb: rdb, mongoDB: mongoDB, publisher: pub}
-}
-
-// RunRound executes one quiz round end-to-end:
-//
-//  1. Pops the next question ID from the Redis list  room:{id}:questions
-//  2. Fetches the full question document from MongoDB
-//  3. Broadcasts a QuestionBroadcast GameEvent to the client stream
-//  4. Runs a 30-second server-side countdown, emitting a TimerSync event
-//     every second so Flutter clients can correct any local clock drift
-//  5. Exits the countdown early if all players have already answered
-//  6. Publishes "round.completed" to RabbitMQ (triggers scoring + answer reveal)
-//  7. If no questions remain in the list, publishes "match.finished"
-//
-// Why server-side timer: the server is the authoritative clock.  A client that
-// paused or manipulated its local timer would gain extra time — the server
-// deadline prevents that.  TimerSync also synchronises devices that joined the
-// stream with a few seconds of lag.
-//
-// NOTE: stream is one player's gRPC server-streaming connection.  In a
-// multi-player room you call RunRound once per player stream (or fan-out via a
-// stream registry before calling RunRound).
-func (s *QuizService) RunRound(
-	roomID string,
-	roundNum int,
-	stream quiz.QuizService_StreamGameEventsServer,
-) error {
-	ctx := stream.Context()
-
-	// ── 1. Pop next question ID ───────────────────────────────────────────────
-	// LPop gives FIFO order from the list built by SelectQuestionsForRoom.
-	questionsKey := fmt.Sprintf("room:%s:questions", roomID)
-	questionID, err := s.rdb.LPop(ctx, questionsKey).Result()
-	if err != nil {
-		return fmt.Errorf("pop question (room %s round %d): %w", roomID, roundNum, err)
+	rpushArgs := make([]interface{}, 0, len(questionIDs)+1)
+	rpushArgs = append(rpushArgs, key)
+	for _, id := range questionIDs {
+		rpushArgs = append(rpushArgs, id)
+	}
+	if err := conn.Send("RPUSH", rpushArgs...); err != nil {
+		return err
 	}
 
-	// ── 2. Fetch question from MongoDB ────────────────────────────────────────
-	questionOID, err := primitive.ObjectIDFromHex(questionID)
-	if err != nil {
-		return fmt.Errorf("invalid question ID %q: %w", questionID, err)
+	if err := conn.Send("EXPIRE", key, 30*60); err != nil {
+		return err
 	}
 
-	fetchCtx, fetchCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer fetchCancel()
-
-	var q Question
-	if err := s.mongoDB.Collection("questions").
-		FindOne(fetchCtx, bson.M{"_id": questionOID}).Decode(&q); err != nil {
-		return fmt.Errorf("fetch question %s: %w", questionID, err)
+	if err := conn.Flush(); err != nil {
+		return err
 	}
 
-	// ── 3. Broadcast QuestionBroadcast ────────────────────────────────────────
-	const roundDuration = 30 * time.Second
-	deadline := time.Now().Add(roundDuration)
-	deadlineMs := deadline.UnixMilli()
-	roundStartedAtMs := time.Now().UnixMilli()
-
-	if err := stream.Send(&quiz.GameEvent{
-		Event: &quiz.GameEvent_Question{
-			Question: &quiz.QuestionBroadcast{
-				RoundNumber: int32(roundNum),
-				Question: &quiz.Question{
-					QuestionId:  questionID,
-					Text:        q.Text,
-					Options:     q.Options,
-					Difficulty:  difficultyFromString(q.Difficulty),
-					Topic:       q.Topic,
-					TimeLimitMs: int32(roundDuration.Milliseconds()),
-				},
-				DeadlineMs: deadlineMs,
-			},
-		},
-	}); err != nil {
-		return fmt.Errorf("send QuestionBroadcast: %w", err)
-	}
-
-	// ── 4 & 5. Server-side countdown with early-exit on all-answered ──────────
-	// Player count is read once; answers are tracked in room:{id}:answers:{n}.
-	playerCount, err := s.rdb.HLen(ctx, fmt.Sprintf("room:%s:players", roomID)).Result()
-	if err != nil {
-		return fmt.Errorf("get player count: %w", err)
-	}
-	answersKey := fmt.Sprintf("room:%s:answers:%d", roomID, roundNum)
-
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	timer := time.NewTimer(roundDuration)
-	defer timer.Stop()
-
-timerLoop:
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case <-timer.C:
-			// Hard deadline reached — move on regardless of answer count.
-			break timerLoop
-
-		case <-ticker.C:
-			// Send TimerSync — client uses DeadlineMs to recompute remaining time,
-			// eliminating drift that accumulates over multiple seconds.
-			if err := stream.Send(&quiz.GameEvent{
-				Event: &quiz.GameEvent_TimerSync{
-					TimerSync: &quiz.TimerSync{
-						RoundNumber:  int32(roundNum),
-						ServerTimeMs: time.Now().UnixMilli(),
-						DeadlineMs:   deadlineMs,
-					},
-				},
-			}); err != nil {
-				return fmt.Errorf("send TimerSync: %w", err)
-			}
-
-			// Early exit: all players submitted before the timer expired.
-			answered, err := s.rdb.HLen(ctx, answersKey).Result()
-			if err == nil && answered >= playerCount {
-				break timerLoop
-			}
+	// Drain 3 replies: DEL, RPUSH, EXPIRE
+	for i := 0; i < 3; i++ {
+		if _, err := conn.Receive(); err != nil {
+			return err
 		}
 	}
-
-	// ── 6. Publish round.completed ────────────────────────────────────────────
-	// The correct answer travels only through RabbitMQ, never through the
-	// client stream, so it cannot be intercepted before the round closes.
-	if err := s.publisher.PublishRoundCompleted(
-		roomID, roundNum, questionID, q.CorrectIndex, roundStartedAtMs,
-	); err != nil {
-		// Non-fatal: log and continue so remaining rounds are not blocked.
-		log.Printf("WARN publish round.completed room=%s round=%d: %v", roomID, roundNum, err)
-	}
-
-	// ── 7. Publish match.finished when no questions remain ────────────────────
-	remaining, err := s.rdb.LLen(ctx, questionsKey).Result()
-	if err != nil {
-		log.Printf("WARN check remaining questions room=%s: %v", roomID, err)
-	}
-	if remaining == 0 {
-		if err := s.publisher.PublishMatchFinished(roomID, roundNum); err != nil {
-			log.Printf("WARN publish match.finished room=%s: %v", roomID, err)
-		}
-	}
-
 	return nil
 }
 
-// difficultyFromString maps the MongoDB string field to the proto enum.
 func difficultyFromString(s string) quiz.Difficulty {
 	switch s {
 	case "easy":
