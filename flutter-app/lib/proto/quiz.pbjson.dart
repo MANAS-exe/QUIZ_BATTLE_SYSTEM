@@ -61,6 +61,39 @@ final $typed_data.Uint8List playerStatusDescriptor = $convert.base64Decode(
     'CgxQbGF5ZXJTdGF0dXMSHQoZUExBWUVSX1NUQVRVU19VTlNQRUNJRklFRBAAEg0KCUNPTk5FQ1'
     'RFRBABEhAKDERJU0NPTk5FQ1RFRBACEhAKDFJFQ09OTkVDVElORxAD');
 
+@$core.Deprecated('Use authRequestDescriptor instead')
+const AuthRequest$json = {
+  '1': 'AuthRequest',
+  '2': [
+    {'1': 'username', '3': 1, '4': 1, '5': 9, '10': 'username'},
+    {'1': 'password', '3': 2, '4': 1, '5': 9, '10': 'password'},
+  ],
+};
+
+/// Descriptor for `AuthRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List authRequestDescriptor = $convert.base64Decode(
+    'CgtBdXRoUmVxdWVzdBIaCgh1c2VybmFtZRgBIAEoCVIIdXNlcm5hbWUSGgoIcGFzc3dvcmQYAi'
+    'ABKAlSCHBhc3N3b3Jk');
+
+@$core.Deprecated('Use authResponseDescriptor instead')
+const AuthResponse$json = {
+  '1': 'AuthResponse',
+  '2': [
+    {'1': 'success', '3': 1, '4': 1, '5': 8, '10': 'success'},
+    {'1': 'token', '3': 2, '4': 1, '5': 9, '10': 'token'},
+    {'1': 'user_id', '3': 3, '4': 1, '5': 9, '10': 'userId'},
+    {'1': 'username', '3': 4, '4': 1, '5': 9, '10': 'username'},
+    {'1': 'message', '3': 5, '4': 1, '5': 9, '10': 'message'},
+    {'1': 'rating', '3': 6, '4': 1, '5': 5, '10': 'rating'},
+  ],
+};
+
+/// Descriptor for `AuthResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List authResponseDescriptor = $convert.base64Decode(
+    'CgxBdXRoUmVzcG9uc2USGAoHc3VjY2VzcxgBIAEoCFIHc3VjY2VzcxIUCgV0b2tlbhgCIAEoCV'
+    'IFdG9rZW4SFwoHdXNlcl9pZBgDIAEoCVIGdXNlcklkEhoKCHVzZXJuYW1lGAQgASgJUgh1c2Vy'
+    'bmFtZRIYCgdtZXNzYWdlGAUgASgJUgdtZXNzYWdlEhYKBnJhdGluZxgGIAEoBVIGcmF0aW5n');
+
 @$core.Deprecated('Use playerDescriptor instead')
 const Player$json = {
   '1': 'Player',
@@ -242,13 +275,15 @@ const WaitingUpdate$json = {
   '2': [
     {'1': 'players_in_pool', '3': 1, '4': 1, '5': 5, '10': 'playersInPool'},
     {'1': 'estimated_wait_seconds', '3': 2, '4': 1, '5': 5, '10': 'estimatedWaitSeconds'},
+    {'1': 'players', '3': 3, '4': 3, '5': 11, '6': '.quiz.Player', '10': 'players'},
   ],
 };
 
 /// Descriptor for `WaitingUpdate`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List waitingUpdateDescriptor = $convert.base64Decode(
     'Cg1XYWl0aW5nVXBkYXRlEiYKD3BsYXllcnNfaW5fcG9vbBgBIAEoBVINcGxheWVyc0luUG9vbB'
-    'I0ChZlc3RpbWF0ZWRfd2FpdF9zZWNvbmRzGAIgASgFUhRlc3RpbWF0ZWRXYWl0U2Vjb25kcw==');
+    'I0ChZlc3RpbWF0ZWRfd2FpdF9zZWNvbmRzGAIgASgFUhRlc3RpbWF0ZWRXYWl0U2Vjb25kcxIm'
+    'CgdwbGF5ZXJzGAMgAygLMgwucXVpei5QbGF5ZXJSB3BsYXllcnM=');
 
 @$core.Deprecated('Use roomRequestDescriptor instead')
 const RoomRequest$json = {
@@ -395,6 +430,8 @@ const RoundResult$json = {
     {'1': 'correct_index', '3': 3, '4': 1, '5': 5, '10': 'correctIndex'},
     {'1': 'scores', '3': 4, '4': 3, '5': 11, '6': '.quiz.PlayerScore', '10': 'scores'},
     {'1': 'fastest_user_id', '3': 5, '4': 1, '5': 9, '10': 'fastestUserId'},
+    {'1': 'correct_answer_text', '3': 6, '4': 1, '5': 9, '10': 'correctAnswerText'},
+    {'1': 'fastest_username', '3': 7, '4': 1, '5': 9, '10': 'fastestUsername'},
   ],
 };
 
@@ -403,7 +440,9 @@ final $typed_data.Uint8List roundResultDescriptor = $convert.base64Decode(
     'CgtSb3VuZFJlc3VsdBIhCgxyb3VuZF9udW1iZXIYASABKAVSC3JvdW5kTnVtYmVyEh8KC3F1ZX'
     'N0aW9uX2lkGAIgASgJUgpxdWVzdGlvbklkEiMKDWNvcnJlY3RfaW5kZXgYAyABKAVSDGNvcnJl'
     'Y3RJbmRleBIpCgZzY29yZXMYBCADKAsyES5xdWl6LlBsYXllclNjb3JlUgZzY29yZXMSJgoPZm'
-    'FzdGVzdF91c2VyX2lkGAUgASgJUg1mYXN0ZXN0VXNlcklk');
+    'FzdGVzdF91c2VyX2lkGAUgASgJUg1mYXN0ZXN0VXNlcklkEi4KE2NvcnJlY3RfYW5zd2VyX3Rl'
+    'eHQYBiABKAlSEWNvcnJlY3RBbnN3ZXJUZXh0EikKEGZhc3Rlc3RfdXNlcm5hbWUYByABKAlSD2'
+    'Zhc3Rlc3RVc2VybmFtZQ==');
 
 @$core.Deprecated('Use matchEndDescriptor instead')
 const MatchEnd$json = {

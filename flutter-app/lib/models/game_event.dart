@@ -131,6 +131,8 @@ class RoundResultEvent extends GameEvent {
   final int correctIndex; // revealed to clients after round ends
   final List<PlayerScore> scores;
   final String fastestUserId;
+  final String correctAnswerText; // actual text of correct option
+  final String fastestUsername;   // display name of fastest player
 
   const RoundResultEvent({
     required this.roundNumber,
@@ -138,6 +140,8 @@ class RoundResultEvent extends GameEvent {
     required this.correctIndex,
     required this.scores,
     required this.fastestUserId,
+    this.correctAnswerText = '',
+    this.fastestUsername = '',
   });
 }
 

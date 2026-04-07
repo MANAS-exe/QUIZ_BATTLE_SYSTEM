@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/game_event.dart';
 
@@ -141,13 +142,36 @@ class GameNotifier extends StateNotifier<GameState> {
     _eventSub?.cancel();
     _eventSub = eventStream.listen(
       _handleEvent,
-      onError: (e) => state = state.copyWith(
-        error: 'Stream error: $e',
-        phase: MatchPhase.idle,
-      ),
+      onError: (e) {
+        debugPrint('[GameProvider] Stream ERROR: $e');
+        state = state.copyWith(
+          error: 'Stream error: $e',
+          phase: MatchPhase.idle,
+        );
+      },
       onDone: () {
+        debugPrint('[GameProvider] Stream DONE — current phase: ${state.phase}');
         if (state.phase != MatchPhase.finished) {
-          state = state.copyWith(error: 'Connection lost');
+          debugPrint('[GameProvider] Stream closed before MatchEnd! Treating as finished.');
+          // Stream closed by server (game ended) — if we have scores, show results
+          if (state.leaderboard.isNotEmpty) {
+            final sorted = [...state.leaderboard]..sort((a, b) => b.score.compareTo(a.score));
+            final winner = sorted.first;
+            state = state.copyWith(
+              phase: MatchPhase.finished,
+              matchEnd: MatchEndEvent(
+                roomId: state.roomId ?? '',
+                winnerUserId: winner.userId,
+                winnerUsername: winner.username,
+                totalRounds: state.totalRounds,
+                durationSeconds: 0,
+                finalScores: state.leaderboard,
+              ),
+              leaderboard: state.leaderboard,
+            );
+          } else {
+            state = state.copyWith(error: 'Connection lost');
+          }
         }
       },
     );
@@ -156,6 +180,7 @@ class GameNotifier extends StateNotifier<GameState> {
   // ── Event handlers (one per GameEvent subtype) ─────────────
 
   void _handleEvent(GameEvent event) {
+    debugPrint('[GameProvider] Event: ${event.runtimeType}');
     switch (event) {
       case QuestionBroadcastEvent():
         _onQuestion(event);
@@ -216,6 +241,7 @@ class GameNotifier extends StateNotifier<GameState> {
 
   void _onRoundResult(RoundResultEvent e) {
     _countdownTimer?.cancel();
+    debugPrint('[GameProvider] RoundResult received — round ${e.roundNumber}, correctIndex=${e.correctIndex}');
     state = state.copyWith(
       phase: MatchPhase.betweenRounds,
       lastRoundResult: e,
@@ -225,6 +251,7 @@ class GameNotifier extends StateNotifier<GameState> {
 
   void _onMatchEnd(MatchEndEvent e) {
     _countdownTimer?.cancel();
+    debugPrint('[GameProvider] MatchEnd received — winner=${e.winnerUsername}, scores=${e.finalScores.length}');
     state = state.copyWith(
       phase: MatchPhase.finished,
       matchEnd: e,
@@ -274,6 +301,45 @@ class GameNotifier extends StateNotifier<GameState> {
       players: players,
       totalRounds: totalRounds,
       phase: MatchPhase.starting,
+    );
+  }
+
+  // ── Forfeit (leave mid-match, show results) ────────────────
+
+  void forfeitMatch() {
+    _eventSub?.cancel();
+    _countdownTimer?.cancel();
+
+    // Build a synthetic MatchEndEvent from whatever we know so far
+    final scores = state.leaderboard.isNotEmpty
+        ? state.leaderboard
+        : state.players
+            .map((p) => PlayerScore(
+                  userId: p.userId,
+                  username: p.username,
+                  score: 0,
+                  rank: 1,
+                  answersCorrect: 0,
+                  avgResponseMs: 0,
+                  isConnected: p.userId != state.userId,
+                ))
+            .toList();
+
+    // Determine winner (highest score, or empty if no scores yet)
+    final sorted = [...scores]..sort((a, b) => b.score.compareTo(a.score));
+    final winner = sorted.isNotEmpty ? sorted.first : null;
+
+    state = state.copyWith(
+      phase: MatchPhase.finished,
+      matchEnd: MatchEndEvent(
+        roomId: state.roomId ?? '',
+        winnerUserId: winner?.userId ?? '',
+        winnerUsername: winner?.username ?? '',
+        totalRounds: state.totalRounds,
+        durationSeconds: 0,
+        finalScores: scores,
+      ),
+      leaderboard: scores,
     );
   }
 

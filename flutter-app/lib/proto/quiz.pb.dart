@@ -18,6 +18,190 @@ import 'quiz.pbenum.dart';
 
 export 'quiz.pbenum.dart';
 
+class AuthRequest extends $pb.GeneratedMessage {
+  factory AuthRequest({
+    $core.String? username,
+    $core.String? password,
+  }) {
+    final $result = create();
+    if (username != null) {
+      $result.username = username;
+    }
+    if (password != null) {
+      $result.password = password;
+    }
+    return $result;
+  }
+  AuthRequest._() : super();
+  factory AuthRequest.fromBuffer($core.List<$core.int> i, [$pb.ExtensionRegistry r = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(i, r);
+  factory AuthRequest.fromJson($core.String i, [$pb.ExtensionRegistry r = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(i, r);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(_omitMessageNames ? '' : 'AuthRequest', package: const $pb.PackageName(_omitMessageNames ? '' : 'quiz'), createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'username')
+    ..aOS(2, _omitFieldNames ? '' : 'password')
+    ..hasRequiredFields = false
+  ;
+
+  @$core.Deprecated(
+  'Using this can add significant overhead to your binary. '
+  'Use [GeneratedMessageGenericExtensions.deepCopy] instead. '
+  'Will be removed in next major version')
+  AuthRequest clone() => AuthRequest()..mergeFromMessage(this);
+  @$core.Deprecated(
+  'Using this can add significant overhead to your binary. '
+  'Use [GeneratedMessageGenericExtensions.rebuild] instead. '
+  'Will be removed in next major version')
+  AuthRequest copyWith(void Function(AuthRequest) updates) => super.copyWith((message) => updates(message as AuthRequest)) as AuthRequest;
+
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static AuthRequest create() => AuthRequest._();
+  AuthRequest createEmptyInstance() => create();
+  static $pb.PbList<AuthRequest> createRepeated() => $pb.PbList<AuthRequest>();
+  @$core.pragma('dart2js:noInline')
+  static AuthRequest getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<AuthRequest>(create);
+  static AuthRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get username => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set username($core.String v) { $_setString(0, v); }
+  @$pb.TagNumber(1)
+  $core.bool hasUsername() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearUsername() => clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get password => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set password($core.String v) { $_setString(1, v); }
+  @$pb.TagNumber(2)
+  $core.bool hasPassword() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPassword() => clearField(2);
+}
+
+class AuthResponse extends $pb.GeneratedMessage {
+  factory AuthResponse({
+    $core.bool? success,
+    $core.String? token,
+    $core.String? userId,
+    $core.String? username,
+    $core.String? message,
+    $core.int? rating,
+  }) {
+    final $result = create();
+    if (success != null) {
+      $result.success = success;
+    }
+    if (token != null) {
+      $result.token = token;
+    }
+    if (userId != null) {
+      $result.userId = userId;
+    }
+    if (username != null) {
+      $result.username = username;
+    }
+    if (message != null) {
+      $result.message = message;
+    }
+    if (rating != null) {
+      $result.rating = rating;
+    }
+    return $result;
+  }
+  AuthResponse._() : super();
+  factory AuthResponse.fromBuffer($core.List<$core.int> i, [$pb.ExtensionRegistry r = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(i, r);
+  factory AuthResponse.fromJson($core.String i, [$pb.ExtensionRegistry r = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(i, r);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(_omitMessageNames ? '' : 'AuthResponse', package: const $pb.PackageName(_omitMessageNames ? '' : 'quiz'), createEmptyInstance: create)
+    ..aOB(1, _omitFieldNames ? '' : 'success')
+    ..aOS(2, _omitFieldNames ? '' : 'token')
+    ..aOS(3, _omitFieldNames ? '' : 'userId')
+    ..aOS(4, _omitFieldNames ? '' : 'username')
+    ..aOS(5, _omitFieldNames ? '' : 'message')
+    ..a<$core.int>(6, _omitFieldNames ? '' : 'rating', $pb.PbFieldType.O3)
+    ..hasRequiredFields = false
+  ;
+
+  @$core.Deprecated(
+  'Using this can add significant overhead to your binary. '
+  'Use [GeneratedMessageGenericExtensions.deepCopy] instead. '
+  'Will be removed in next major version')
+  AuthResponse clone() => AuthResponse()..mergeFromMessage(this);
+  @$core.Deprecated(
+  'Using this can add significant overhead to your binary. '
+  'Use [GeneratedMessageGenericExtensions.rebuild] instead. '
+  'Will be removed in next major version')
+  AuthResponse copyWith(void Function(AuthResponse) updates) => super.copyWith((message) => updates(message as AuthResponse)) as AuthResponse;
+
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static AuthResponse create() => AuthResponse._();
+  AuthResponse createEmptyInstance() => create();
+  static $pb.PbList<AuthResponse> createRepeated() => $pb.PbList<AuthResponse>();
+  @$core.pragma('dart2js:noInline')
+  static AuthResponse getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<AuthResponse>(create);
+  static AuthResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.bool get success => $_getBF(0);
+  @$pb.TagNumber(1)
+  set success($core.bool v) { $_setBool(0, v); }
+  @$pb.TagNumber(1)
+  $core.bool hasSuccess() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSuccess() => clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get token => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set token($core.String v) { $_setString(1, v); }
+  @$pb.TagNumber(2)
+  $core.bool hasToken() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearToken() => clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get userId => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set userId($core.String v) { $_setString(2, v); }
+  @$pb.TagNumber(3)
+  $core.bool hasUserId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearUserId() => clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get username => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set username($core.String v) { $_setString(3, v); }
+  @$pb.TagNumber(4)
+  $core.bool hasUsername() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearUsername() => clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.String get message => $_getSZ(4);
+  @$pb.TagNumber(5)
+  set message($core.String v) { $_setString(4, v); }
+  @$pb.TagNumber(5)
+  $core.bool hasMessage() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearMessage() => clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.int get rating => $_getIZ(5);
+  @$pb.TagNumber(6)
+  set rating($core.int v) { $_setSignedInt32(5, v); }
+  @$pb.TagNumber(6)
+  $core.bool hasRating() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearRating() => clearField(6);
+}
+
 class Player extends $pb.GeneratedMessage {
   factory Player({
     $core.String? userId,
@@ -908,6 +1092,7 @@ class WaitingUpdate extends $pb.GeneratedMessage {
   factory WaitingUpdate({
     $core.int? playersInPool,
     $core.int? estimatedWaitSeconds,
+    $core.Iterable<Player>? players,
   }) {
     final $result = create();
     if (playersInPool != null) {
@@ -915,6 +1100,9 @@ class WaitingUpdate extends $pb.GeneratedMessage {
     }
     if (estimatedWaitSeconds != null) {
       $result.estimatedWaitSeconds = estimatedWaitSeconds;
+    }
+    if (players != null) {
+      $result.players.addAll(players);
     }
     return $result;
   }
@@ -925,6 +1113,7 @@ class WaitingUpdate extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(_omitMessageNames ? '' : 'WaitingUpdate', package: const $pb.PackageName(_omitMessageNames ? '' : 'quiz'), createEmptyInstance: create)
     ..a<$core.int>(1, _omitFieldNames ? '' : 'playersInPool', $pb.PbFieldType.O3)
     ..a<$core.int>(2, _omitFieldNames ? '' : 'estimatedWaitSeconds', $pb.PbFieldType.O3)
+    ..pc<Player>(3, _omitFieldNames ? '' : 'players', $pb.PbFieldType.PM, subBuilder: Player.create)
     ..hasRequiredFields = false
   ;
 
@@ -966,6 +1155,9 @@ class WaitingUpdate extends $pb.GeneratedMessage {
   $core.bool hasEstimatedWaitSeconds() => $_has(1);
   @$pb.TagNumber(2)
   void clearEstimatedWaitSeconds() => clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<Player> get players => $_getList(2);
 }
 
 /// GetRoomQuestions
@@ -1673,6 +1865,8 @@ class RoundResult extends $pb.GeneratedMessage {
     $core.int? correctIndex,
     $core.Iterable<PlayerScore>? scores,
     $core.String? fastestUserId,
+    $core.String? correctAnswerText,
+    $core.String? fastestUsername,
   }) {
     final $result = create();
     if (roundNumber != null) {
@@ -1690,6 +1884,12 @@ class RoundResult extends $pb.GeneratedMessage {
     if (fastestUserId != null) {
       $result.fastestUserId = fastestUserId;
     }
+    if (correctAnswerText != null) {
+      $result.correctAnswerText = correctAnswerText;
+    }
+    if (fastestUsername != null) {
+      $result.fastestUsername = fastestUsername;
+    }
     return $result;
   }
   RoundResult._() : super();
@@ -1702,6 +1902,8 @@ class RoundResult extends $pb.GeneratedMessage {
     ..a<$core.int>(3, _omitFieldNames ? '' : 'correctIndex', $pb.PbFieldType.O3)
     ..pc<PlayerScore>(4, _omitFieldNames ? '' : 'scores', $pb.PbFieldType.PM, subBuilder: PlayerScore.create)
     ..aOS(5, _omitFieldNames ? '' : 'fastestUserId')
+    ..aOS(6, _omitFieldNames ? '' : 'correctAnswerText')
+    ..aOS(7, _omitFieldNames ? '' : 'fastestUsername')
     ..hasRequiredFields = false
   ;
 
@@ -1764,6 +1966,24 @@ class RoundResult extends $pb.GeneratedMessage {
   $core.bool hasFastestUserId() => $_has(4);
   @$pb.TagNumber(5)
   void clearFastestUserId() => clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get correctAnswerText => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set correctAnswerText($core.String v) { $_setString(5, v); }
+  @$pb.TagNumber(6)
+  $core.bool hasCorrectAnswerText() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearCorrectAnswerText() => clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get fastestUsername => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set fastestUsername($core.String v) { $_setString(6, v); }
+  @$pb.TagNumber(7)
+  $core.bool hasFastestUsername() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearFastestUsername() => clearField(7);
 }
 
 /// Sent once at the very end of the match

@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../models/game_event.dart';
 import '../providers/game_provider.dart';
+import '../services/auth_service.dart';
 import '../services/game_service.dart';
 
 // ─────────────────────────────────────────
@@ -66,19 +67,24 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
   @override
   void initState() {
     super.initState();
-    _userId = 'player-${DateTime.now().millisecondsSinceEpoch % 100000}';
+    final auth = ref.read(authProvider);
+    _userId = auth.userId ?? 'player-${DateTime.now().millisecondsSinceEpoch % 100000}';
     _setupAnimations();
   }
 
   void _onStartPressed() {
+    // Invalidate any cached stream from a previous session (Play Again)
+    ref.invalidate(matchmakingStreamProvider(_userId));
     setState(() => _searching = true);
     _startCountdown();
     _joinMatchmaking();
   }
 
   void _joinMatchmaking() {
-    ref.read(gameProvider.notifier).setUser(_userId, 'Player');
-    ref.read(gameServiceProvider).joinMatchmaking(_userId, 1000);
+    final auth = ref.read(authProvider);
+    final username = auth.username ?? 'Player';
+    ref.read(gameProvider.notifier).setUser(_userId, username);
+    ref.read(gameServiceProvider).joinMatchmaking(_userId, username, auth.rating.toDouble());
   }
 
   void _setupAnimations() {
@@ -120,14 +126,18 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
 
   void _onCancel() {
     _countdownTimer?.cancel();
-    ref.read(gameServiceProvider).leaveMatchmaking(_userId);
-    ref.read(gameProvider.notifier).cancelMatchmaking();
-    if (mounted) context.pop();
+    if (_searching) {
+      ref.read(gameServiceProvider).leaveMatchmaking(_userId);
+      ref.read(gameProvider.notifier).cancelMatchmaking();
+      // Go back to lobby view (not pop — matchmaking is the root after login)
+      setState(() => _searching = false);
+    }
   }
 
   void _onMatchFound(MatchmakingUpdate update) {
     _countdownTimer?.cancel();
-    ref.read(gameProvider.notifier).setUser(_userId, 'You');
+    final auth = ref.read(authProvider);
+    ref.read(gameProvider.notifier).setUser(_userId, auth.username ?? 'You');
     ref.read(gameProvider.notifier).onMatchFound(
       roomId: update.roomId!,
       players: update.players,
@@ -189,6 +199,7 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
                   total: update.totalNeeded,
                   waitSeconds: waitSeconds,
                   foundPlayers: update.players,
+                  waitingPlayers: update.waitingPlayers,
                 ),
               ),
             ),
@@ -248,15 +259,18 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
 
         const SizedBox(height: 12),
 
-        // Show userId so the user knows which player they are
-        Text(
-          _userId,
-          style: TextStyle(
-            color: _coral.withValues(alpha: 0.7),
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        // Show username
+        Consumer(builder: (_, ref, __) {
+          final auth = ref.watch(authProvider);
+          return Text(
+            'Logged in as ${auth.username ?? _userId}',
+            style: TextStyle(
+              color: _coral.withValues(alpha: 0.7),
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          );
+        }),
 
         const Spacer(),
 
@@ -325,7 +339,10 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
     required int total,
     required int waitSeconds,
     List<Player> foundPlayers = const [],
+    List<Player> waitingPlayers = const [],
   }) {
+    final displayCount = waitingPlayers.isNotEmpty ? waitingPlayers.length : playersFound;
+
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -355,7 +372,7 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
           text: TextSpan(
             children: [
               TextSpan(
-                text: '$playersFound',
+                text: '$displayCount',
                 style: const TextStyle(
                   color: _coral,
                   fontSize: 16,
@@ -363,7 +380,7 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
                 ),
               ),
               TextSpan(
-                text: '/$total players found',
+                text: ' player${displayCount == 1 ? '' : 's'} in lobby',
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.55),
                   fontSize: 15,
@@ -372,15 +389,16 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
               ),
             ],
           ),
-        )
-            .animate()
-            .fadeIn(duration: 300.ms)
-            .slideY(begin: 0.2, end: 0),
+        ),
 
-        const SizedBox(height: 32),
+        const SizedBox(height: 24),
 
-        // ── Found player chips ──
-        if (foundPlayers.isNotEmpty)
+        // ── Waiting player avatars ──
+        if (waitingPlayers.isNotEmpty)
+          _buildWaitingPlayers(waitingPlayers),
+
+        // ── Found player chips (on match found) ──
+        if (foundPlayers.isNotEmpty && waitingPlayers.isEmpty)
           _buildPlayerChips(foundPlayers),
 
         const Spacer(),
@@ -499,6 +517,29 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
           final i = e.key;
           final p = e.value;
           return _PlayerChip(player: p, delay: Duration(milliseconds: i * 120));
+        }).toList(),
+      ),
+    );
+  }
+
+  // ── Waiting players (floating avatars) ─────────────────────
+
+  Widget _buildWaitingPlayers(List<Player> players) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 12,
+        runSpacing: 14,
+        children: players.asMap().entries.map((e) {
+          final i = e.key;
+          final p = e.value;
+          final isMe = p.userId == _userId;
+          return _WaitingPlayerBubble(
+            player: p,
+            isMe: isMe,
+            delay: Duration(milliseconds: i * 100),
+          );
         }).toList(),
       ),
     );
@@ -640,5 +681,98 @@ class _PlayerChip extends StatelessWidget {
         .animate()
         .fadeIn(delay: delay, duration: 350.ms)
         .scale(begin: const Offset(0.6, 0.6), end: const Offset(1, 1), delay: delay);
+  }
+}
+
+// ─────────────────────────────────────────
+// WAITING PLAYER BUBBLE
+// ─────────────────────────────────────────
+
+class _WaitingPlayerBubble extends StatelessWidget {
+  final Player player;
+  final bool isMe;
+  final Duration delay;
+
+  const _WaitingPlayerBubble({required this.player, this.isMe = false, required this.delay});
+
+  Color get _avatarColor {
+    const colors = [
+      Color(0xFF0F3460),
+      Color(0xFF533483),
+      Color(0xFF2D6A4F),
+      Color(0xFF7B2D8B),
+      Color(0xFF1A4A80),
+    ];
+    return colors[player.username.codeUnitAt(0) % colors.length];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Floating avatar with glow
+        Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: _avatarColor,
+            border: Border.all(
+              color: isMe ? _coral : _coral.withValues(alpha: 0.5),
+              width: isMe ? 2.5 : 2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: _avatarColor.withValues(alpha: 0.4),
+                blurRadius: 12,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            player.username.isNotEmpty
+                ? player.username[0].toUpperCase()
+                : '?',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        // Username
+        Text(
+          isMe ? 'You' : player.username,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: isMe ? _coral : Colors.white.withValues(alpha: 0.75),
+            fontSize: 11,
+            fontWeight: isMe ? FontWeight.w700 : FontWeight.w600,
+          ),
+        ),
+        // Rating
+        Text(
+          '${player.rating}',
+          style: TextStyle(
+            color: _coral.withValues(alpha: 0.7),
+            fontSize: 10,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    )
+        .animate()
+        .fadeIn(delay: delay, duration: 400.ms)
+        .scale(
+            begin: const Offset(0.5, 0.5),
+            end: const Offset(1, 1),
+            delay: delay,
+            curve: Curves.elasticOut,
+            duration: 600.ms)
+        .then(delay: 200.ms)
+        .shimmer(duration: 1800.ms, color: _coral.withValues(alpha: 0.15));
   }
 }

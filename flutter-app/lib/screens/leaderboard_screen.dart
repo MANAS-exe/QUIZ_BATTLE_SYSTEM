@@ -58,6 +58,14 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(gameProvider);
 
+    // If we arrive and the phase is already finished (MatchEnd arrived
+    // before this screen mounted), navigate immediately.
+    if (state.phase == MatchPhase.finished) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (context.mounted) context.goNamed('results');
+      });
+    }
+
     // Navigate on phase change
     ref.listen(matchPhaseProvider, (_, next) {
       if (!context.mounted) return;
@@ -150,7 +158,14 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
   // ─── Correct answer reveal card ───────────────────────────
 
   Widget _buildAnswerReveal(RoundResultEvent result) {
-    final hasFastest = result.fastestUserId.isNotEmpty;
+    final fastestName = result.fastestUsername.isNotEmpty
+        ? result.fastestUsername
+        : result.fastestUserId;
+    final hasFastest = fastestName.isNotEmpty;
+    final answerText = result.correctAnswerText.isNotEmpty
+        ? result.correctAnswerText
+        : 'Option ${String.fromCharCode(65 + result.correctIndex)}';
+
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
       padding: const EdgeInsets.all(16),
@@ -186,38 +201,50 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'Option ${String.fromCharCode(65 + result.correctIndex)}',
+                  answerText,
                   style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 15,
+                      fontSize: 14,
                       fontWeight: FontWeight.w700),
                 ),
               ],
             ),
           ),
-          if (hasFastest)
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.bolt_rounded, color: _gold, size: 14),
-                    SizedBox(width: 2),
-                    Text('Fastest',
-                        style: TextStyle(
-                            color: _gold,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600)),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  result.fastestUserId,
-                  style: const TextStyle(
-                      color: Colors.white70, fontSize: 11),
-                ),
-              ],
-            ),
+          Flexible(
+            child: hasFastest
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.bolt_rounded, color: _gold, size: 14),
+                          SizedBox(width: 2),
+                          Text('Fastest',
+                              style: TextStyle(
+                                  color: _gold,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600)),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        fastestName,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 11),
+                      ),
+                    ],
+                  )
+                : const Text(
+                    'No correct\nanswers',
+                    textAlign: TextAlign.end,
+                    style: TextStyle(
+                        color: Colors.white30,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500),
+                  ),
+          ),
         ],
       ),
     ).animate().fadeIn(duration: 500.ms).slideY(begin: -0.12, end: 0);
@@ -533,12 +560,15 @@ class _ListRow extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Text(
-                      isMe ? 'You' : score.username,
-                      style: TextStyle(
-                          color: isMe ? _coral : Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600),
+                    Flexible(
+                      child: Text(
+                        isMe ? 'You' : score.username,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: isMe ? _coral : Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600),
+                      ),
                     ),
                     if (isMe) ...[
                       const SizedBox(width: 6),

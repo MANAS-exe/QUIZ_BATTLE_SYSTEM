@@ -19,6 +19,64 @@ import 'quiz.pb.dart' as $0;
 
 export 'quiz.pb.dart';
 
+@$pb.GrpcServiceName('quiz.AuthService')
+class AuthServiceClient extends $grpc.Client {
+  static final _$register = $grpc.ClientMethod<$0.AuthRequest, $0.AuthResponse>(
+      '/quiz.AuthService/Register',
+      ($0.AuthRequest value) => value.writeToBuffer(),
+      ($core.List<$core.int> value) => $0.AuthResponse.fromBuffer(value));
+  static final _$login = $grpc.ClientMethod<$0.AuthRequest, $0.AuthResponse>(
+      '/quiz.AuthService/Login',
+      ($0.AuthRequest value) => value.writeToBuffer(),
+      ($core.List<$core.int> value) => $0.AuthResponse.fromBuffer(value));
+
+  AuthServiceClient($grpc.ClientChannel channel,
+      {$grpc.CallOptions? options,
+      $core.Iterable<$grpc.ClientInterceptor>? interceptors})
+      : super(channel, options: options,
+        interceptors: interceptors);
+
+  $grpc.ResponseFuture<$0.AuthResponse> register($0.AuthRequest request, {$grpc.CallOptions? options}) {
+    return $createUnaryCall(_$register, request, options: options);
+  }
+
+  $grpc.ResponseFuture<$0.AuthResponse> login($0.AuthRequest request, {$grpc.CallOptions? options}) {
+    return $createUnaryCall(_$login, request, options: options);
+  }
+}
+
+@$pb.GrpcServiceName('quiz.AuthService')
+abstract class AuthServiceBase extends $grpc.Service {
+  $core.String get $name => 'quiz.AuthService';
+
+  AuthServiceBase() {
+    $addMethod($grpc.ServiceMethod<$0.AuthRequest, $0.AuthResponse>(
+        'Register',
+        register_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.AuthRequest.fromBuffer(value),
+        ($0.AuthResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.AuthRequest, $0.AuthResponse>(
+        'Login',
+        login_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.AuthRequest.fromBuffer(value),
+        ($0.AuthResponse value) => value.writeToBuffer()));
+  }
+
+  $async.Future<$0.AuthResponse> register_Pre($grpc.ServiceCall call, $async.Future<$0.AuthRequest> request) async {
+    return register(call, await request);
+  }
+
+  $async.Future<$0.AuthResponse> login_Pre($grpc.ServiceCall call, $async.Future<$0.AuthRequest> request) async {
+    return login(call, await request);
+  }
+
+  $async.Future<$0.AuthResponse> register($grpc.ServiceCall call, $0.AuthRequest request);
+  $async.Future<$0.AuthResponse> login($grpc.ServiceCall call, $0.AuthRequest request);
+}
 @$pb.GrpcServiceName('quiz.MatchmakingService')
 class MatchmakingServiceClient extends $grpc.Client {
   static final _$joinMatchmaking = $grpc.ClientMethod<$0.JoinRequest, $0.JoinResponse>(

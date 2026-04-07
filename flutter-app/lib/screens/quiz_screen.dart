@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../models/game_event.dart';
 import '../providers/game_provider.dart';
+import '../services/auth_service.dart';
 import '../services/game_service.dart';
 
 // ─────────────────────────────────────────
@@ -182,11 +183,114 @@ class _QuizScreenState extends ConsumerState<QuizScreen>
 
   // ─── Top bar ──────────────────────────────────────────────
 
+  void _exitGame() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Leave Match?',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+        content: const Text('You will forfeit this match.',
+            style: TextStyle(color: Colors.white54)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Stay', style: TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              ref.read(gameProvider.notifier).forfeitMatch();
+              context.goNamed('results');
+            },
+            child: const Text('Leave', style: TextStyle(color: _coral)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTopBar(GameState state) {
+    final auth = ref.watch(authProvider);
+    final username = auth.username ?? 'You';
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      padding: const EdgeInsets.fromLTRB(8, 12, 16, 0),
       child: Row(
         children: [
+          // Exit button
+          GestureDetector(
+            onTap: _exitGame,
+            child: Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _surface,
+                border: Border.all(color: Colors.white12),
+              ),
+              child: const Icon(Icons.close, color: Colors.white38, size: 16),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Profile avatar + name + rating
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _coral.withValues(alpha: 0.3)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 22,
+                  height: 22,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _coral.withValues(alpha: 0.3),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    username.isNotEmpty ? username[0].toUpperCase() : '?',
+                    style: const TextStyle(
+                      color: _coral,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  username,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: _gold.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '${auth.rating}',
+                    style: const TextStyle(
+                      color: _gold,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
           // Difficulty badge
           if (state.currentQuestion != null)
             _DifficultyBadge(state.currentQuestion!.difficulty),

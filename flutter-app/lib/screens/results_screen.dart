@@ -208,29 +208,31 @@ class ResultsScreen extends ConsumerWidget {
           border: Border.all(color: _gold.withValues(alpha: 0.3)),
         ),
         child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(Icons.emoji_events_rounded,
                 color: _gold, size: 22),
             const SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Winner',
-                  style: TextStyle(
-                      color: Colors.white38,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500),
-                ),
-                Text(
-                  matchEnd.winnerUsername,
-                  style: const TextStyle(
-                      color: _gold,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800),
-                ),
-              ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Winner',
+                    style: TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500),
+                  ),
+                  Text(
+                    matchEnd.winnerUsername,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: _gold,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -354,17 +356,17 @@ class ResultsScreen extends ConsumerWidget {
   Widget _buildMatchSummary(MatchEndEvent matchEnd) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 10,
+        runSpacing: 8,
         children: [
           _SummaryChip(
               icon: Icons.quiz_rounded,
               label: '${matchEnd.totalRounds} rounds'),
-          const SizedBox(width: 10),
           _SummaryChip(
               icon: Icons.timer_rounded,
               label: _fmtDuration(matchEnd.durationSeconds)),
-          const SizedBox(width: 10),
           _SummaryChip(
               icon: Icons.people_rounded,
               label: '${matchEnd.finalScores.length} players'),
@@ -719,12 +721,15 @@ class _StandingRow extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Text(
-                      isMe ? 'You' : score.username,
-                      style: TextStyle(
-                          color: isMe ? _coral : Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600),
+                    Flexible(
+                      child: Text(
+                        isMe ? 'You' : score.username,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: isMe ? _coral : Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600),
+                      ),
                     ),
                     if (isMe) ...[
                       const SizedBox(width: 6),

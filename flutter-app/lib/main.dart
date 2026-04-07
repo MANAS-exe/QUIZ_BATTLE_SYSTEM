@@ -4,17 +4,25 @@ import 'package:go_router/go_router.dart';
 
 import 'providers/game_provider.dart';
 import 'screens/leaderboard_screen.dart';
+import 'screens/login_screen.dart';
 import 'screens/matchmaking_screen.dart';
 import 'screens/quiz_screen.dart';
 import 'screens/results_screen.dart';
+import 'services/auth_service.dart';
+import 'services/game_service.dart';
 
 // ─────────────────────────────────────────
 // ROUTER
 // ─────────────────────────────────────────
 
 final _router = GoRouter(
-  initialLocation: '/matchmaking',
+  initialLocation: '/login',
   routes: [
+    GoRoute(
+      path: '/login',
+      name: 'login',
+      builder: (context, state) => const LoginScreen(),
+    ),
     GoRoute(
       path: '/matchmaking',
       name: 'matchmaking',
@@ -37,16 +45,30 @@ final _router = GoRouter(
     ),
   ],
 
-  // Redirect to matchmaking if game state is missing (e.g. direct URL or app killed mid-match)
   redirect: (context, routerState) {
     final path = routerState.uri.path;
+    final container = ProviderScope.containerOf(context);
+    final auth = container.read(authProvider);
+
+    // Not logged in — force to login (except if already there)
+    if (!auth.isLoggedIn && path != '/login') {
+      return '/login';
+    }
+
+    // Logged in — don't stay on login
+    if (auth.isLoggedIn && path == '/login') {
+      return '/matchmaking';
+    }
+
+    // Game routes require an active room
     const gameRoutes = ['/quiz', '/leaderboard', '/results'];
     if (gameRoutes.contains(path)) {
-      final gameState = ProviderScope.containerOf(context).read(gameProvider);
+      final gameState = container.read(gameProvider);
       if (gameState.roomId == null) {
         return '/matchmaking';
       }
     }
+
     return null;
   },
 );
@@ -57,7 +79,6 @@ final _router = GoRouter(
 
 void main() {
   runApp(
-    // ProviderScope is the Riverpod root — all providers live inside this
     const ProviderScope(
       child: QuizBattleApp(),
     ),
@@ -73,6 +94,10 @@ class QuizBattleApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Initialize auth client with the shared gRPC channel
+    final channel = ref.watch(grpcChannelProvider);
+    ref.read(authProvider.notifier).init(channel);
+
     return MaterialApp.router(
       title: 'Quiz Battle',
       debugShowCheckedModeBanner: false,
@@ -93,7 +118,6 @@ class QuizBattleApp extends ConsumerWidget {
         primary: const Color(0xFFE94560),
         secondary: const Color(0xFFFFB830),
       ),
-    //   fontFamily: 'Inter',
       textTheme: const TextTheme(
         displayLarge: TextStyle(fontSize: 32, fontWeight: FontWeight.w700),
         titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),

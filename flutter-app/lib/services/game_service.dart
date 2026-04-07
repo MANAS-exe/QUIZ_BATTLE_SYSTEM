@@ -6,44 +6,53 @@ import 'package:grpc/grpc.dart';
 import '../models/game_event.dart' as app;
 import '../proto/quiz.pb.dart' as pb;
 import '../proto/quiz.pbgrpc.dart' as pbgrpc;
+import 'auth_service.dart';
 
 // ─────────────────────────────────────────
-// CHANNEL
+// CHANNEL (shared singleton)
 // ─────────────────────────────────────────
 
-// Native (iOS / Android / macOS) — direct gRPC on port 50051
-ClientChannel _buildChannel() {
-  return ClientChannel(
+final grpcChannelProvider = Provider<ClientChannel>((ref) {
+  final channel = ClientChannel(
     'localhost',
     port: 50051,
     options: const ChannelOptions(credentials: ChannelCredentials.insecure()),
   );
-}
+  ref.onDispose(channel.shutdown);
+  return channel;
+});
 
 // ─────────────────────────────────────────
 // SERVICE CLASS
 // ─────────────────────────────────────────
 
 class GameService {
-  late final ClientChannel _channel;
+  final ClientChannel _channel;
+  final Ref _ref;
   late final pbgrpc.MatchmakingServiceClient _matchmakingClient;
   late final pbgrpc.QuizServiceClient _quizClient;
 
-  GameService() {
-    _channel = _buildChannel();
+  GameService(this._channel, this._ref) {
     _matchmakingClient = pbgrpc.MatchmakingServiceClient(_channel);
     _quizClient = pbgrpc.QuizServiceClient(_channel);
   }
 
+  /// Build gRPC call options with JWT authorization header.
+  CallOptions get _authOptions {
+    final token = _ref.read(authProvider).token;
+    if (token == null) return CallOptions();
+    return CallOptions(metadata: {'authorization': 'Bearer $token'});
+  }
+
   // ── 1. Join Matchmaking ──────────────────────────────────────
 
-  Future<bool> joinMatchmaking(String userId, double rating) async {
+  Future<bool> joinMatchmaking(String userId, String username, double rating) async {
     try {
       final req = pb.JoinRequest()
         ..userId = userId
-        ..username = userId  // use userId as display name until real auth
+        ..username = username
         ..rating = rating.toInt();
-      final res = await _matchmakingClient.joinMatchmaking(req);
+      final res = await _matchmakingClient.joinMatchmaking(req, options: _authOptions);
       return res.success;
     } on GrpcError catch (e) {
       debugPrint('[GameService] joinMatchmaking error: ${e.codeName} — ${e.message}');
@@ -58,7 +67,7 @@ class GameService {
   Stream<MatchmakingUpdate> subscribeToMatch(String userId) async* {
     final req = pb.SubscribeRequest()..userId = userId;
     try {
-      await for (final event in _matchmakingClient.subscribeToMatch(req)) {
+      await for (final event in _matchmakingClient.subscribeToMatch(req, options: _authOptions)) {
         if (event.hasMatchFound()) {
           final mf = event.matchFound;
           yield MatchmakingUpdate(
@@ -68,9 +77,11 @@ class GameService {
             players: mf.players.map(_mapPlayer).toList(),
           );
         } else if (event.hasWaitingUpdate()) {
+          final wu = event.waitingUpdate;
           yield MatchmakingUpdate(
-            playersFound: event.waitingUpdate.playersInPool,
+            playersFound: wu.playersInPool,
             totalNeeded: 4,
+            waitingPlayers: wu.players.map(_mapPlayer).toList(),
           );
         } else if (event.hasMatchCancelled()) {
           yield MatchmakingUpdate(cancelled: true);
@@ -90,7 +101,7 @@ class GameService {
       ..userId = userId;
 
     return _quizClient
-        .streamGameEvents(req)
+        .streamGameEvents(req, options: _authOptions)
         .map(_mapProtoEvent)
         .where((e) => e != null)
         .cast<app.GameEvent>()
@@ -117,7 +128,7 @@ class GameService {
         ..questionId = questionId
         ..answerIndex = answerIndex
         ..submittedAtMs = Int64(DateTime.now().millisecondsSinceEpoch);
-      final ack = await _quizClient.submitAnswer(req);
+      final ack = await _quizClient.submitAnswer(req, options: _authOptions);
       return ack.received;
     } on GrpcError catch (e) {
       debugPrint('[GameService] submitAnswer error: ${e.codeName} — ${e.message}');
@@ -130,7 +141,7 @@ class GameService {
   Future<void> leaveMatchmaking(String userId) async {
     try {
       final req = pb.LeaveRequest()..userId = userId;
-      await _matchmakingClient.leaveMatchmaking(req);
+      await _matchmakingClient.leaveMatchmaking(req, options: _authOptions);
     } on GrpcError catch (e) {
       debugPrint('[GameService] leaveMatchmaking error: ${e.codeName}');
     }
@@ -141,12 +152,6 @@ class GameService {
   Future<List<app.PlayerScore>> getLeaderboard(String roomId) async {
     // Leaderboard is pushed via stream events — stub fallback only
     return [];
-  }
-
-  // ── Cleanup ──────────────────────────────────────────────────
-
-  Future<void> dispose() async {
-    await _channel.shutdown();
   }
 
   // ─────────────────────────────────────────
@@ -192,6 +197,8 @@ class GameService {
         questionId: rr.questionId,
         correctIndex: rr.correctIndex,
         fastestUserId: rr.fastestUserId,
+        correctAnswerText: rr.correctAnswerText,
+        fastestUsername: rr.fastestUsername,
         scores: rr.scores.map(_mapScore).toList(),
       );
     }
@@ -260,6 +267,7 @@ class MatchmakingUpdate {
   final String? roomId;
   final int totalRounds;
   final List<app.Player> players;
+  final List<app.Player> waitingPlayers; // players currently in the pool
 
   const MatchmakingUpdate({
     this.playersFound = 1,
@@ -269,6 +277,7 @@ class MatchmakingUpdate {
     this.roomId,
     this.totalRounds = 5,
     this.players = const [],
+    this.waitingPlayers = const [],
   });
 }
 
@@ -277,9 +286,8 @@ class MatchmakingUpdate {
 // ─────────────────────────────────────────
 
 final gameServiceProvider = Provider<GameService>((ref) {
-  final service = GameService();
-  ref.onDispose(service.dispose);
-  return service;
+  final channel = ref.watch(grpcChannelProvider);
+  return GameService(channel, ref);
 });
 
 final gameEventStreamProvider =
