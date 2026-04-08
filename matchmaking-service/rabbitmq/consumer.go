@@ -21,9 +21,11 @@ const (
 	answerDLQ        = "answer-processing-dlq"
 	answerRoutingKey = "answer.submitted"
 
-	basePoints    = 100
-	speedBonusMax = 50
-	speedWindowMs = 10_000 // 10 seconds — answers within this window earn a bonus
+	basePointsEasy   = 100
+	basePointsMedium = 125
+	basePointsHard   = 150
+	speedBonusMax    = 50
+	speedWindowMs    = 10_000 // 10 seconds — answers within this window earn a bonus
 
 	answersTTLSeconds = 30 * 60 // mirrors room lifetime
 
@@ -46,7 +48,8 @@ type AnswerEvent struct {
 // questionDoc is the minimal shape read from MongoDB questions collection.
 type questionDoc struct {
 	QuestionID   string `bson:"question_id"`
-	CorrectIndex int32  `bson:"correctIndex"` // matches field name used in init.js seed
+	CorrectIndex int32  `bson:"correctIndex"`
+	Difficulty   string `bson:"difficulty"` // "easy", "medium", "hard"
 }
 
 // Consumer reads answer.submitted events, validates answers against MongoDB,
@@ -252,6 +255,15 @@ func (c *Consumer) process(ev AnswerEvent) error {
 	}
 
 	// ── 3. Score calculation ──────────────────────────────────
+	// Base points scale with difficulty: easy=100, medium=125, hard=150
+	basePoints := basePointsEasy
+	switch q.Difficulty {
+	case "medium":
+		basePoints = basePointsMedium
+	case "hard":
+		basePoints = basePointsHard
+	}
+
 	points := 0
 	isCorrect := ev.AnswerIndex == q.CorrectIndex
 
@@ -261,7 +273,7 @@ func (c *Consumer) process(ev AnswerEvent) error {
 		responseMs := ev.SubmittedAtMs - ev.RoundStartedAtMs
 		if responseMs > 0 && responseMs < speedWindowMs {
 			// Linear speed bonus: full bonus at 0ms, zero at speedWindowMs.
-			// e.g. 3 000ms → bonus = 50 * (1 - 3000/10000) = 35
+			// e.g. hard + 3s → 150 + 50*(1-3000/10000) = 150 + 35 = 185
 			bonus := int(float64(speedBonusMax) * (1 - float64(responseMs)/float64(speedWindowMs)))
 			points += bonus
 		}

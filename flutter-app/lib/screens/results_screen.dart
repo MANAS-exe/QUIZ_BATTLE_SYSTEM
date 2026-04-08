@@ -24,17 +24,8 @@ const _red = Color(0xFFE74C3C);
 // XP CALCULATION
 // ─────────────────────────────────────────
 
-/// XP = (correct answers × 10) + speed bonus
-/// Speed bonus: up to 5 pts per correct answer for fast responses (<3000 ms)
-int _calcXP(PlayerScore s) {
-  final base = s.answersCorrect * 10;
-  if (s.answersCorrect == 0) return base;
-  final speedBonus = ((1 - (s.avgResponseMs / 10000).clamp(0.0, 1.0)) *
-          5 *
-          s.answersCorrect)
-      .round();
-  return base + speedBonus;
-}
+/// XP = the player's actual match score from the backend leaderboard.
+int _calcXP(PlayerScore s) => s.score;
 
 // ─────────────────────────────────────────
 // SCREEN

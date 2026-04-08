@@ -15,7 +15,7 @@ import '../services/game_service.dart';
 
 const _coral = Color(0xFFC96442);
 const _bg = Color(0xFF0D0D1A);
-const _matchmakingTimeout = 30; // seconds before auto-cancel
+const _matchmakingTimeout = 20; // seconds — gives server lobbyWait (10s) + buffer
 
 // ─────────────────────────────────────────
 // PROVIDERS
