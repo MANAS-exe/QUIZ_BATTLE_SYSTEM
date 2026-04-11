@@ -9,15 +9,15 @@ import (
 	"time"
 
 	"github.com/gomodule/redigo/redis"
-	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	quiz "github.com/yourorg/quiz-battle/proto/quiz"
-	"quiz-battle/matchmaking/models"
 	"quiz-battle/matchmaking/rabbitmq"
 	rdb "quiz-battle/matchmaking/redis"
+	"quiz-battle/shared/middleware"
+	"quiz-battle/shared/models"
 )
 
 const (
@@ -33,7 +33,6 @@ type MatchmakingHandler struct {
 	quiz.UnimplementedMatchmakingServiceServer
 
 	pool      *redis.Pool
-	mongoDB   *mongo.Database
 	publisher *rabbitmq.Publisher
 
 	// mu guards playerChans — one buffered channel per waiting player
@@ -41,10 +40,9 @@ type MatchmakingHandler struct {
 	playerChans map[string]chan *quiz.MatchEvent
 }
 
-func NewMatchmakingHandler(pool *redis.Pool, mongoDB *mongo.Database, publisher *rabbitmq.Publisher) *MatchmakingHandler {
+func NewMatchmakingHandler(pool *redis.Pool, publisher *rabbitmq.Publisher) *MatchmakingHandler {
 	return &MatchmakingHandler{
 		pool:        pool,
-		mongoDB:     mongoDB,
 		publisher:   publisher,
 		playerChans: make(map[string]chan *quiz.MatchEvent),
 	}
@@ -61,6 +59,11 @@ func (h *MatchmakingHandler) Register(s *grpc.Server) {
 // ─────────────────────────────────────────────────────────────
 
 func (h *MatchmakingHandler) JoinMatchmaking(ctx context.Context, req *quiz.JoinRequest) (*quiz.JoinResponse, error) {
+	// Use authenticated userId from JWT context instead of trusting the request
+	authUID := middleware.UserIDFromContext(ctx)
+	if authUID != "" {
+		req.UserId = authUID
+	}
 	if req.UserId == "" || req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id and username are required")
 	}
@@ -199,6 +202,9 @@ func (h *MatchmakingHandler) sendWaitingUpdateTo(ch chan *quiz.MatchEvent) {
 // ─────────────────────────────────────────────────────────────
 
 func (h *MatchmakingHandler) LeaveMatchmaking(ctx context.Context, req *quiz.LeaveRequest) (*quiz.LeaveResponse, error) {
+	if authUID := middleware.UserIDFromContext(ctx); authUID != "" {
+		req.UserId = authUID
+	}
 	if req.UserId == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
@@ -234,6 +240,9 @@ func (h *MatchmakingHandler) LeaveMatchmaking(ctx context.Context, req *quiz.Lea
 // Long-lived stream. The server pushes a MatchFound event once a room is ready.
 
 func (h *MatchmakingHandler) SubscribeToMatch(req *quiz.SubscribeRequest, stream grpc.ServerStreamingServer[quiz.MatchEvent]) error {
+	if authUID := middleware.UserIDFromContext(stream.Context()); authUID != "" {
+		req.UserId = authUID
+	}
 	if req.UserId == "" {
 		return status.Error(codes.InvalidArgument, "user_id is required")
 	}
@@ -300,11 +309,18 @@ func (h *MatchmakingHandler) SubscribeToMatch(req *quiz.SubscribeRequest, stream
 // ─────────────────────────────────────────────────────────────
 
 func (h *MatchmakingHandler) tryCreateRoom() {
+	// Global lock prevents multiple goroutines from racing on ZPOPMIN
+	ownerToken, lockErr := rdb.AcquireLock(h.pool, "matchmaking_create")
+	if lockErr != nil {
+		log.Printf("⚠️  tryCreateRoom: could not acquire lock, another goroutine is creating: %v", lockErr)
+		return
+	}
+	defer rdb.ReleaseLock(h.pool, "matchmaking_create", ownerToken) //nolint:errcheck
+
 	conn := h.pool.Get()
 	defer conn.Close()
 
 	// ZPOPMIN pops members with the lowest scores (lowest rating) first.
-	// For production, switch to ZPOPMAX or a rating-band strategy.
 	rawPairs, err := redis.Strings(conn.Do("ZPOPMIN", matchmakingPoolKey, maxPlayersPerRoom))
 	if err != nil || len(rawPairs) < minPlayersToStart*2 {
 		// Not enough players — re-add whatever we popped
@@ -352,18 +368,7 @@ func (h *MatchmakingHandler) tryCreateRoom() {
 		return
 	}
 
-	// Select and cache questions in Redis for this room so GetRoomQuestions
-	// and StreamGameEvents can find them immediately.
-	playerIDs := make([]string, len(players))
-	for i, p := range players {
-		playerIDs[i] = p.UserID
-	}
-	if _, err := SelectQuestionsForRoom(h.pool, h.mongoDB, room.ID, playerIDs, room.TotalRounds); err != nil {
-		log.Printf("❌ SelectQuestionsForRoom failed for room %s: %v", room.ID, err)
-		return
-	}
-	log.Printf("📚 Questions selected for room %s", room.ID)
-
+	// Publish match.created — quiz-service consumes this to select questions
 	if err := h.publisher.PublishMatchCreated(room); err != nil {
 		log.Printf("⚠️  PublishMatchCreated: %v", err)
 	}

@@ -1,1 +1,22 @@
-.dart_tool/
+# OS
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Flutter
+flutter-app/.dart_tool/
+flutter-app/build/
+flutter-app/.flutter-plugins
+flutter-app/.flutter-plugins-dependencies
+flutter-app/.packages
+
+# Go
+*.exe
+*.test
+*.out
+
+# Docker
+mongo-data/

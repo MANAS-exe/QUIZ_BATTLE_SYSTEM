@@ -49,9 +49,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
   AuthNotifier() : super(const AuthState());
 
   late final pbgrpc.AuthServiceClient _client;
+  bool _initialized = false;
 
   void init(ClientChannel channel) {
+    if (_initialized) return;
     _client = pbgrpc.AuthServiceClient(channel);
+    _initialized = true;
   }
 
   Future<String?> register(String username, String password) async {

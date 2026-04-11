@@ -1,5 +1,7 @@
 services:
 
+  # ── Infrastructure ────────────────────────────────────────────
+
   mongodb:
     image: mongo:7
     container_name: quiz_mongodb
@@ -7,6 +9,7 @@ services:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
@@ -32,8 +35,8 @@ services:
     image: rabbitmq:3-management-alpine
     container_name: quiz_rabbitmq
     ports:
-      - "5672:5672"     # app connections
-      - "15672:15672"   # management UI
+      - "5672:5672"
+      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -44,6 +47,64 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # ── Application Services ──────────────────────────────────────
+
+  matchmaking-service:
+    build:
+      context: .
+      dockerfile: matchmaking-service/Dockerfile
+    container_name: quiz_matchmaking
+    ports:
+      - "50051:50051"
+      - "8080:8080"
+    environment:
+      GRPC_ADDR: ":50051"
+      GRPC_WEB_ADDR: ":8080"
+      REDIS_ADDR: "redis:6379"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      MONGO_URI: "mongodb://mongodb:27017"
+    depends_on:
+      mongodb:  { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+
+  quiz-service:
+    build:
+      context: .
+      dockerfile: quiz-service/Dockerfile
+    container_name: quiz_engine
+    ports:
+      - "50052:50052"
+    environment:
+      GRPC_ADDR: ":50052"
+      REDIS_ADDR: "redis:6379"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      MONGO_URI: "mongodb://mongodb:27017"
+    depends_on:
+      mongodb:  { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+
+  scoring-service:
+    build:
+      context: .
+      dockerfile: scoring-service/Dockerfile
+    container_name: quiz_scoring
+    ports:
+      - "50053:50053"
+    environment:
+      GRPC_ADDR: ":50053"
+      REDIS_ADDR: "redis:6379"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      MONGO_URI: "mongodb://mongodb:27017"
+    depends_on:
+      mongodb:  { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
 
 volumes:
   mongo-data:

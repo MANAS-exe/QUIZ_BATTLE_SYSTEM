@@ -9,32 +9,50 @@ import '../proto/quiz.pbgrpc.dart' as pbgrpc;
 import 'auth_service.dart';
 
 // ─────────────────────────────────────────
-// CHANNEL (shared singleton)
+// CHANNELS — one per service
 // ─────────────────────────────────────────
 
-final grpcChannelProvider = Provider<ClientChannel>((ref) {
-  final channel = ClientChannel(
-    'localhost',
-    port: 50051,
-    options: const ChannelOptions(credentials: ChannelCredentials.insecure()),
-  );
-  ref.onDispose(channel.shutdown);
-  return channel;
+ClientChannel _makeChannel(int port) => ClientChannel(
+  'localhost',
+  port: port,
+  options: const ChannelOptions(credentials: ChannelCredentials.insecure()),
+);
+
+final matchmakingChannelProvider = Provider<ClientChannel>((ref) {
+  final ch = _makeChannel(50051);
+  ref.onDispose(ch.shutdown);
+  return ch;
 });
+
+final quizChannelProvider = Provider<ClientChannel>((ref) {
+  final ch = _makeChannel(50052);
+  ref.onDispose(ch.shutdown);
+  return ch;
+});
+
+final scoringChannelProvider = Provider<ClientChannel>((ref) {
+  final ch = _makeChannel(50053);
+  ref.onDispose(ch.shutdown);
+  return ch;
+});
+
+// Keep for backward compatibility (auth uses matchmaking channel)
+final grpcChannelProvider = matchmakingChannelProvider;
 
 // ─────────────────────────────────────────
 // SERVICE CLASS
 // ─────────────────────────────────────────
 
 class GameService {
-  final ClientChannel _channel;
   final Ref _ref;
   late final pbgrpc.MatchmakingServiceClient _matchmakingClient;
   late final pbgrpc.QuizServiceClient _quizClient;
+  late final pbgrpc.ScoringServiceClient _scoringClient;
 
-  GameService(this._channel, this._ref) {
-    _matchmakingClient = pbgrpc.MatchmakingServiceClient(_channel);
-    _quizClient = pbgrpc.QuizServiceClient(_channel);
+  GameService(this._ref) {
+    _matchmakingClient = pbgrpc.MatchmakingServiceClient(_ref.read(matchmakingChannelProvider));
+    _quizClient = pbgrpc.QuizServiceClient(_ref.read(quizChannelProvider));
+    _scoringClient = pbgrpc.ScoringServiceClient(_ref.read(scoringChannelProvider));
   }
 
   /// Build gRPC call options with JWT authorization header.
@@ -150,8 +168,14 @@ class GameService {
   // ── 6. Get Leaderboard ───────────────────────────────────────
 
   Future<List<app.PlayerScore>> getLeaderboard(String roomId) async {
-    // Leaderboard is pushed via stream events — stub fallback only
-    return [];
+    try {
+      final req = pb.LeaderboardRequest()..roomId = roomId;
+      final res = await _scoringClient.getLeaderboard(req, options: _authOptions);
+      return res.scores.map(_mapScore).toList();
+    } on GrpcError catch (e) {
+      debugPrint('[GameService] getLeaderboard error: ${e.codeName} — ${e.message}');
+      return [];
+    }
   }
 
   // ─────────────────────────────────────────
@@ -286,8 +310,7 @@ class MatchmakingUpdate {
 // ─────────────────────────────────────────
 
 final gameServiceProvider = Provider<GameService>((ref) {
-  final channel = ref.watch(grpcChannelProvider);
-  return GameService(channel, ref);
+  return GameService(ref);
 });
 
 final gameEventStreamProvider =
