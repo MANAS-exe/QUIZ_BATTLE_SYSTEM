@@ -9,25 +9,38 @@ const _coral = Color(0xFFC96442);
 const _bg = Color(0xFF0D0D1A);
 const _surface = Color(0xFF1A1A2E);
 
-class SpectatingScreen extends ConsumerWidget {
+class SpectatingScreen extends ConsumerStatefulWidget {
   const SpectatingScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<SpectatingScreen> createState() => _SpectatingScreenState();
+}
+
+class _SpectatingScreenState extends ConsumerState<SpectatingScreen> {
+  bool _navigated = false;
+
+  void _goToResults() {
+    if (_navigated) return;
+    _navigated = true;
+    context.goNamed('results');
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(gameProvider);
 
-    // Navigate to results when match finishes
-    ref.listen(matchPhaseProvider, (_, next) {
-      if (!context.mounted) return;
-      if (next == MatchPhase.finished) context.goNamed('results');
-    });
-
-    // If already finished on mount (MatchEnd arrived before screen)
-    if (state.phase == MatchPhase.finished) {
+    // Navigate instantly when phase becomes finished (from any source)
+    if (state.phase == MatchPhase.finished || state.matchEnd != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (context.mounted) context.goNamed('results');
+        if (mounted) _goToResults();
       });
     }
+
+    // Also listen for phase changes
+    ref.listen(matchPhaseProvider, (_, next) {
+      if (!context.mounted) return;
+      if (next == MatchPhase.finished) _goToResults();
+    });
 
     return Scaffold(
       backgroundColor: _bg,
@@ -38,7 +51,7 @@ class SpectatingScreen extends ConsumerWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Animated hourglass
+                // Animated icon
                 Container(
                   width: 100,
                   height: 100,
@@ -129,9 +142,7 @@ class SpectatingScreen extends ConsumerWidget {
                                   child: Text(
                                     '#${s.rank}',
                                     style: TextStyle(
-                                      color: isMe
-                                          ? _coral
-                                          : Colors.white38,
+                                      color: isMe ? _coral : Colors.white38,
                                       fontSize: 12,
                                       fontWeight: FontWeight.w700,
                                     ),
@@ -143,9 +154,7 @@ class SpectatingScreen extends ConsumerWidget {
                                     isMe ? 'You' : s.username,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
-                                      color: isMe
-                                          ? _coral
-                                          : Colors.white70,
+                                      color: isMe ? _coral : Colors.white70,
                                       fontSize: 13,
                                       fontWeight: FontWeight.w600,
                                     ),

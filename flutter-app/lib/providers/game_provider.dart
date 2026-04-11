@@ -42,6 +42,10 @@ class GameState {
   // Match end
   final MatchEndEvent? matchEnd;
 
+  // Streak tracking
+  final int currentAnswerStreak; // consecutive correct answers this match
+  final int maxAnswerStreak;     // best streak this match
+
   // Error state
   final String? error;
 
@@ -60,6 +64,8 @@ class GameState {
     this.players = const [],
     this.lastRoundResult,
     this.matchEnd,
+    this.currentAnswerStreak = 0,
+    this.maxAnswerStreak = 0,
     this.error,
   });
 
@@ -85,6 +91,8 @@ class GameState {
     List<Player>? players,
     RoundResultEvent? lastRoundResult,
     MatchEndEvent? matchEnd,
+    int? currentAnswerStreak,
+    int? maxAnswerStreak,
     String? error,
     bool clearQuestion = false,
     bool clearAnswer = false,
@@ -106,6 +114,8 @@ class GameState {
       players: players ?? this.players,
       lastRoundResult: clearRoundResult ? null : (lastRoundResult ?? this.lastRoundResult),
       matchEnd: matchEnd ?? this.matchEnd,
+      currentAnswerStreak: currentAnswerStreak ?? this.currentAnswerStreak,
+      maxAnswerStreak: maxAnswerStreak ?? this.maxAnswerStreak,
       error: clearError ? null : (error ?? this.error),
     );
   }
@@ -120,6 +130,7 @@ class GameNotifier extends StateNotifier<GameState> {
 
   StreamSubscription<GameEvent>? _eventSub;
   Timer? _countdownTimer;
+  DateTime? _matchStartedAt;
 
   // ── Session setup ──────────────────────────────────────────
 
@@ -144,7 +155,12 @@ class GameNotifier extends StateNotifier<GameState> {
     _eventSub = eventStream.listen(
       _handleEvent,
       onError: (e) {
-        debugPrint('[GameProvider] Stream ERROR: $e');
+        debugPrint('[GameProvider] Stream ERROR: $e (phase: ${state.phase})');
+        // If spectating, stream error means match ended — show results
+        if (state.phase == MatchPhase.spectating && state.leaderboard.isNotEmpty) {
+          _buildSyntheticMatchEnd();
+          return;
+        }
         state = state.copyWith(
           error: 'Stream error: $e',
           phase: MatchPhase.idle,
@@ -153,26 +169,7 @@ class GameNotifier extends StateNotifier<GameState> {
       onDone: () {
         debugPrint('[GameProvider] Stream DONE — current phase: ${state.phase}');
         if (state.phase != MatchPhase.finished) {
-          debugPrint('[GameProvider] Stream closed before MatchEnd! Treating as finished.');
-          // Stream closed by server (game ended) — if we have scores, show results
-          if (state.leaderboard.isNotEmpty) {
-            final sorted = [...state.leaderboard]..sort((a, b) => b.score.compareTo(a.score));
-            final winner = sorted.first;
-            state = state.copyWith(
-              phase: MatchPhase.finished,
-              matchEnd: MatchEndEvent(
-                roomId: state.roomId ?? '',
-                winnerUserId: winner.userId,
-                winnerUsername: winner.username,
-                totalRounds: state.totalRounds,
-                durationSeconds: 0,
-                finalScores: state.leaderboard,
-              ),
-              leaderboard: state.leaderboard,
-            );
-          } else {
-            state = state.copyWith(error: 'Connection lost');
-          }
+          _buildSyntheticMatchEnd();
         }
       },
     );
@@ -180,15 +177,53 @@ class GameNotifier extends StateNotifier<GameState> {
 
   // ── Event handlers (one per GameEvent subtype) ─────────────
 
+  void _buildSyntheticMatchEnd() {
+    debugPrint('[GameProvider] Building synthetic MatchEnd from leaderboard');
+    if (state.leaderboard.isNotEmpty) {
+      final sorted = [...state.leaderboard]..sort((a, b) => b.score.compareTo(a.score));
+      final winner = sorted.first;
+      final duration = _matchStartedAt != null
+          ? DateTime.now().difference(_matchStartedAt!).inSeconds
+          : 0;
+      state = state.copyWith(
+        phase: MatchPhase.finished,
+        matchEnd: MatchEndEvent(
+          roomId: state.roomId ?? '',
+          winnerUserId: winner.userId,
+          winnerUsername: winner.username,
+          totalRounds: state.totalRounds,
+          durationSeconds: duration,
+          finalScores: state.leaderboard,
+        ),
+      );
+    } else {
+      state = state.copyWith(error: 'Connection lost');
+    }
+  }
+
   void _handleEvent(GameEvent event) {
     debugPrint('[GameProvider] Event: ${event.runtimeType}');
 
-    // While spectating, only process leaderboard updates and match end
+    // While spectating, process limited events (no questions/timer/answers)
     if (state.phase == MatchPhase.spectating) {
+      debugPrint('[GameProvider] SPECTATING event: ${event.runtimeType}');
       if (event is MatchEndEvent) {
+        debugPrint('[GameProvider] SPECTATING: MatchEnd received!');
         _onMatchEnd(event);
       } else if (event is LeaderboardUpdateEvent) {
         _onLeaderboard(event);
+      } else if (event is RoundResultEvent) {
+        debugPrint('[GameProvider] SPECTATING: RoundResult round=${event.roundNumber}/${state.totalRounds}');
+        state = state.copyWith(
+          currentRound: event.roundNumber,
+          leaderboard: event.scores,
+        );
+        // Last round → match is over, build results instantly
+        if (event.roundNumber >= state.totalRounds) {
+          debugPrint('[GameProvider] SPECTATING: Last round! Building synthetic MatchEnd');
+          _buildSyntheticMatchEnd();
+        }
+        return;
       }
       return;
     }
@@ -225,6 +260,7 @@ class GameNotifier extends StateNotifier<GameState> {
 
   void _onQuestion(QuestionBroadcastEvent e) {
     _countdownTimer?.cancel();
+    _matchStartedAt ??= DateTime.now(); // track match start (first question)
     final totalSecs = (e.question.timeLimitMs / 1000).round();
     state = state.copyWith(
       phase: MatchPhase.inRound,
@@ -254,10 +290,18 @@ class GameNotifier extends StateNotifier<GameState> {
   void _onRoundResult(RoundResultEvent e) {
     _countdownTimer?.cancel();
     debugPrint('[GameProvider] RoundResult received — round ${e.roundNumber}, correctIndex=${e.correctIndex}');
+
+    // Update answer streak: if player's answer matches correct, increment; else reset
+    final wasCorrect = state.selectedAnswerIndex == e.correctIndex;
+    final newStreak = wasCorrect ? state.currentAnswerStreak + 1 : 0;
+    final newMax = newStreak > state.maxAnswerStreak ? newStreak : state.maxAnswerStreak;
+
     state = state.copyWith(
       phase: MatchPhase.betweenRounds,
       lastRoundResult: e,
       leaderboard: e.scores,
+      currentAnswerStreak: newStreak,
+      maxAnswerStreak: newMax,
     );
   }
 
@@ -324,11 +368,19 @@ class GameNotifier extends StateNotifier<GameState> {
     state = state.copyWith(phase: MatchPhase.spectating);
   }
 
+  /// Immediately build results and finish — used when player forfeits.
+  void forfeitToResults() {
+    _eventSub?.cancel();
+    _countdownTimer?.cancel();
+    _buildSyntheticMatchEnd();
+  }
+
   // ── Cleanup ────────────────────────────────────────────────
 
   void reset() {
     _eventSub?.cancel();
     _countdownTimer?.cancel();
+    _matchStartedAt = null;
     state = const GameState();
   }
 

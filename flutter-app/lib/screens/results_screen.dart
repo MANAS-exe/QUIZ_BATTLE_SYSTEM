@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../models/game_event.dart';
 import '../providers/game_provider.dart';
+import '../services/auth_service.dart';
 
 // ─────────────────────────────────────────
 // CONSTANTS
@@ -34,20 +35,51 @@ int _calcXP(PlayerScore s) => s.score;
 /// Final match results screen. Shown after MatchEnd event arrives.
 /// Features: trophy animation, personal stats card, final standings,
 /// rematch and share buttons.
-class ResultsScreen extends ConsumerWidget {
+class ResultsScreen extends ConsumerStatefulWidget {
   const ResultsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ResultsScreen> createState() => _ResultsScreenState();
+}
+
+class _ResultsScreenState extends ConsumerState<ResultsScreen> {
+  bool _statsSaved = false;
+
+  void _saveStatsIfNeeded() {
+    if (_statsSaved) return;
+    final gs = ref.read(gameProvider);
+    final me = gs.matchEnd;
+    if (me == null) return;
+    _statsSaved = true;
+    final won = me.winnerUserId == gs.userId;
+    final myScore =
+        gs.leaderboard.where((s) => s.userId == gs.userId).firstOrNull;
+    ref.read(authProvider.notifier).recordMatchResult(
+          won: won,
+          newRating:
+              ref.read(authProvider).rating + (myScore?.score ?? 0),
+          matchMaxStreak: gs.maxAnswerStreak,
+        );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(gameProvider);
     final matchEnd = state.matchEnd;
+
+    // Save stats as soon as the match result is available
+    if (matchEnd != null && !_statsSaved) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _saveStatsIfNeeded();
+      });
+    }
 
     return Scaffold(
       backgroundColor: _bg,
       body: SafeArea(
         child: matchEnd == null
             ? _buildLoading()
-            : _buildResults(context, ref, state, matchEnd),
+            : _buildResults(context, state, matchEnd),
       ),
     );
   }
@@ -72,7 +104,6 @@ class ResultsScreen extends ConsumerWidget {
 
   Widget _buildResults(
     BuildContext context,
-    WidgetRef ref,
     GameState state,
     MatchEndEvent matchEnd,
   ) {
@@ -94,7 +125,7 @@ class ResultsScreen extends ConsumerWidget {
                 const SizedBox(height: 20),
                 if (myScore != null) ...[
                   _buildPersonalStats(
-                      myScore, matchEnd.totalRounds, isWinner),
+                      myScore, matchEnd.totalRounds, isWinner, state.maxAnswerStreak),
                   const SizedBox(height: 20),
                 ],
                 _buildMatchSummary(matchEnd),
@@ -105,7 +136,7 @@ class ResultsScreen extends ConsumerWidget {
             ),
           ),
         ),
-        _buildActions(context, ref, state, matchEnd, myScore),
+        _buildActions(context, state, matchEnd, myScore),
       ],
     );
   }
@@ -252,7 +283,7 @@ class ResultsScreen extends ConsumerWidget {
   // ─── Personal stats card ──────────────────────────────────
 
   Widget _buildPersonalStats(
-      PlayerScore my, int totalRounds, bool isWinner) {
+      PlayerScore my, int totalRounds, bool isWinner, int maxStreak) {
     final wrongAnswers = totalRounds - my.answersCorrect;
     final accuracy = totalRounds > 0
         ? (my.answersCorrect / totalRounds * 100).round()
@@ -349,6 +380,12 @@ class ResultsScreen extends ConsumerWidget {
                   label: 'Rank',
                   value: '#${my.rank}',
                 ),
+                _StatCell(
+                  icon: Icons.local_fire_department_rounded,
+                  iconColor: _red,
+                  label: 'Best Streak',
+                  value: '$maxStreak',
+                ),
               ],
             ),
           ],
@@ -422,7 +459,6 @@ class ResultsScreen extends ConsumerWidget {
 
   Widget _buildActions(
     BuildContext context,
-    WidgetRef ref,
     GameState state,
     MatchEndEvent matchEnd,
     PlayerScore? myScore,

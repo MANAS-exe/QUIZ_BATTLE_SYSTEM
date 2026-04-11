@@ -165,13 +165,20 @@ timerLoop:
 				break timerLoop
 			}
 
-			// Use a fresh connection for the check (main conn may be stale after 30s)
+			// Check BOTH submitted key (instant) and answers key (from scoring consumer)
 			checkConn := s.rdb.Get()
-			answered, err := goredis.Int64(checkConn.Do("HLEN", answersKey))
+			submitted, _ := goredis.Int64(checkConn.Do("HLEN", answersKey))
+			scoredKey := fmt.Sprintf("room:%s:answers:%d", roomID, roundNum)
+			scored, _ := goredis.Int64(checkConn.Do("HLEN", scoredKey))
 			checkConn.Close()
-			log.Printf("🔍 Round %d tick: submitted=%d active=%d key=%s err=%v", roundNum, answered, activeCount, answersKey, err)
-			if err == nil && answered >= activeCount {
-				log.Printf("⚡ All %d active players answered (submitted=%d) — advancing round %d", activeCount, answered, roundNum)
+
+			answered := submitted
+			if scored > submitted {
+				answered = scored // use whichever is higher
+			}
+
+			if answered >= activeCount {
+				log.Printf("⚡ All %d active players answered (submitted=%d scored=%d) — advancing round %d", activeCount, submitted, scored, roundNum)
 				break timerLoop
 			}
 		}

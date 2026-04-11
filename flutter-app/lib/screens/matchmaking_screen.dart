@@ -213,71 +213,138 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
   // ── Lobby (pre-matchmaking) ───────────────────────────────
 
   Widget _buildLobby() {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Spacer(),
+    final auth = ref.watch(authProvider);
+    final username = auth.username ?? _userId;
 
-        // Icon
-        Container(
-          width: 100,
-          height: 100,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: _coral.withValues(alpha: 0.15),
-            border: Border.all(color: _coral.withValues(alpha: 0.3), width: 2),
-          ),
-          child: const Icon(
-            Icons.sports_esports_rounded,
-            color: _coral,
-            size: 48,
-          ),
-        ),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        children: [
+          const SizedBox(height: 24),
 
-        const SizedBox(height: 32),
-
-        const Text(
-          'Ready to battle?',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 26,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        Text(
-          'Press Start when you\'re ready to\nfind an opponent',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.5),
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        // Show username
-        Consumer(builder: (_, ref, __) {
-          final auth = ref.watch(authProvider);
-          return Text(
-            'Logged in as ${auth.username ?? _userId}',
-            style: TextStyle(
-              color: _coral.withValues(alpha: 0.7),
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
+          // ── Player profile card ──
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _coral.withValues(alpha: 0.25)),
             ),
-          );
-        }),
+            child: Column(
+              children: [
+                // Avatar + name
+                Container(
+                  width: 70,
+                  height: 70,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _coral.withValues(alpha: 0.2),
+                    border: Border.all(color: _coral, width: 2.5),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    username.isNotEmpty ? username[0].toUpperCase() : '?',
+                    style: const TextStyle(
+                      color: _coral,
+                      fontSize: 28,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  username,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 16),
 
-        const Spacer(),
+                // Stats row
+                // Stats row 1
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildStatItem(
+                      Icons.star_rounded,
+                      const Color(0xFFFFB830),
+                      '${auth.rating}',
+                      'Rating',
+                    ),
+                    _buildStatItem(
+                      Icons.sports_esports_rounded,
+                      _coral,
+                      '${auth.matchesPlayed}',
+                      'Played',
+                    ),
+                    _buildStatItem(
+                      Icons.emoji_events_rounded,
+                      const Color(0xFF2ECC71),
+                      '${auth.matchesWon}',
+                      'Won',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                // Stats row 2
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildStatItem(
+                      Icons.local_fire_department_rounded,
+                      const Color(0xFFE74C3C),
+                      '${auth.currentStreak}',
+                      'Daily Streak',
+                    ),
+                    _buildStatItem(
+                      Icons.whatshot_rounded,
+                      const Color(0xFFFFB830),
+                      '${auth.maxStreak}',
+                      'Max Streak',
+                    ),
+                    _buildStatItem(
+                      Icons.bolt_rounded,
+                      const Color(0xFFC96442),
+                      '${auth.maxQuestionStreak}',
+                      'Best Q Streak',
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ).animate().fadeIn(duration: 400.ms).slideY(begin: -0.1, end: 0),
 
-        // Start button
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
-          child: SizedBox(
+          const SizedBox(height: 32),
+
+          // ── Ready text ──
+          const Text(
+            'Ready to battle?',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          Text(
+            'Find an opponent and test your knowledge',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+
+          const SizedBox(height: 32),
+
+          // ── Start button ──
+          SizedBox(
             width: double.infinity,
             child: ElevatedButton(
               onPressed: _onStartPressed,
@@ -297,8 +364,36 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
                 ),
               ),
             ),
+          ).animate().fadeIn(delay: 200.ms, duration: 400.ms).slideY(begin: 0.2, end: 0),
+
+          const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatItem(IconData icon, Color color, String value, String label) {
+    return Column(
+      children: [
+        Icon(icon, color: color, size: 22),
+        const SizedBox(height: 6),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
           ),
-        ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.2, end: 0),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.4),
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
       ],
     );
   }

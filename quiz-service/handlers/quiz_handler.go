@@ -263,6 +263,7 @@ func (h *QuizServiceHandler) SubmitAnswer(ctx context.Context, req *quiz.AnswerR
 	if req.AnswerIndex == -1 {
 		room := h.hub.getOrCreate(req.RoomId, 0)
 		room.markForfeited(req.UserId)
+		log.Printf("🚪 Forfeit: user=%s room=%s activeCount=%d", req.UserId, req.RoomId, room.activeCount())
 		return &quiz.AnswerAck{Received: true, Message: "Forfeited"}, nil
 	}
 
@@ -275,9 +276,9 @@ func (h *QuizServiceHandler) SubmitAnswer(ctx context.Context, req *quiz.AnswerR
 	// "answers" hash for idempotency — we must NOT write there or it skips scoring.
 	rdConn := h.redisPool.Get()
 	submittedKey := fmt.Sprintf("room:%s:submitted:%d", req.RoomId, req.RoundNumber)
-	rdConn.Do("HSETNX", submittedKey, req.UserId, req.AnswerIndex) //nolint:errcheck
-	rdConn.Do("EXPIRE", submittedKey, 30*60)                       //nolint:errcheck
-	log.Printf("📝 Recorded submission — user=%s key=%s round=%d", req.UserId, submittedKey, req.RoundNumber)
+	setRes, setErr := rdConn.Do("HSETNX", submittedKey, req.UserId, req.AnswerIndex)
+	rdConn.Do("EXPIRE", submittedKey, 30*60) //nolint:errcheck
+	log.Printf("📝 Recorded submission — user=%s key=%s round=%d setResult=%v setErr=%v", req.UserId, submittedKey, req.RoundNumber, setRes, setErr)
 
 	// Fetch the round start time for response-time calculation.
 	var roundStartedAtMs int64
@@ -328,19 +329,29 @@ func (h *QuizServiceHandler) StreamGameEvents(req *quiz.StreamRequest, stream gr
 
 	roomID := req.RoomId
 
-	// Determine total rounds from Redis question list length
-	conn := h.redisPool.Get()
-	totalRounds, _ := goredis.Int(conn.Do("LLEN", fmt.Sprintf("room:%s:questions", roomID)))
-	conn.Close()
+	// Check if the game loop is already running for this room
+	h.hub.mu.Lock()
+	existingRoom, roomExists := h.hub.rooms[roomID]
+	h.hub.mu.Unlock()
 
-	if totalRounds == 0 {
-		return status.Error(codes.FailedPrecondition, "room has no questions — call SelectQuestionsForRoom first")
+	var room *gameRoom
+	if roomExists {
+		// Room exists — game already in progress, just subscribe
+		room = existingRoom
+	} else {
+		// First connection — check questions exist
+		conn := h.redisPool.Get()
+		totalRounds, _ := goredis.Int(conn.Do("LLEN", fmt.Sprintf("room:%s:questions", roomID)))
+		conn.Close()
+
+		if totalRounds == 0 {
+			return status.Error(codes.FailedPrecondition, "room has no questions — call SelectQuestionsForRoom first")
+		}
+		room = h.hub.getOrCreate(roomID, totalRounds)
 	}
 
-	room := h.hub.getOrCreate(roomID, totalRounds)
-
 	// Buffer must handle worst case: ~35 events/round (question + 30 timersync + result + leaderboard + matchend)
-	ch := make(chan *quiz.GameEvent, totalRounds*40)
+	ch := make(chan *quiz.GameEvent, room.totalRounds*40+50)
 	room.addSub(ch, req.UserId)
 	defer room.removeSub(ch, req.UserId)
 
@@ -387,6 +398,7 @@ func (h *QuizServiceHandler) runGameLoop(roomID string, room *gameRoom) {
 	log.Printf("⏳ Room %s: waiting 5s for players to subscribe…", roomID)
 	time.Sleep(5 * time.Second)
 
+	matchStartedAt := time.Now()
 	ctx := context.Background()
 
 	var autoWinnerID string       // set if match ends early due to disconnections
@@ -464,7 +476,8 @@ func (h *QuizServiceHandler) runGameLoop(roomID string, room *gameRoom) {
 	}
 
 	// All rounds done (or early end) — broadcast MatchEnd
-	matchEnd, err := h.buildMatchEndEvent(roomID, room.totalRounds, autoWinnerID)
+	matchDuration := int32(time.Since(matchStartedAt).Seconds())
+	matchEnd, err := h.buildMatchEndEvent(roomID, room.totalRounds, autoWinnerID, matchDuration)
 	if err != nil {
 		log.Printf("⚠️  buildMatchEnd room=%s: %v", roomID, err)
 		return
@@ -480,7 +493,7 @@ func (h *QuizServiceHandler) runGameLoop(roomID string, room *gameRoom) {
 	h.saveMatchHistory(matchEnd, playedQuestionIDs)
 
 	// Give clients time to receive MatchEnd before closeAll() in defer
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 }
 
 func (h *QuizServiceHandler) buildRoundResultEvent(roomID string, roundNum int, info *RoundInfo) (*quiz.GameEvent, error) {
@@ -637,7 +650,7 @@ func (h *QuizServiceHandler) buildLeaderboardEvent(roomID string, roundNum int) 
 
 // buildMatchEndEvent constructs the MatchEnd event. If autoWinnerID is non-empty,
 // that player wins regardless of score (last player standing).
-func (h *QuizServiceHandler) buildMatchEndEvent(roomID string, totalRounds int, autoWinnerID string) (*quiz.GameEvent, error) {
+func (h *QuizServiceHandler) buildMatchEndEvent(roomID string, totalRounds int, autoWinnerID string, durationSeconds int32) (*quiz.GameEvent, error) {
 	scores, err := h.buildPlayerScores(roomID)
 	if err != nil {
 		return nil, err
@@ -666,11 +679,12 @@ func (h *QuizServiceHandler) buildMatchEndEvent(roomID string, totalRounds int, 
 	return &quiz.GameEvent{
 		Event: &quiz.GameEvent_MatchEnd{
 			MatchEnd: &quiz.MatchEnd{
-				RoomId:         roomID,
-				WinnerUserId:   winnerUserID,
-				WinnerUsername: winnerUsername,
-				TotalRounds:    int32(totalRounds),
-				FinalScores:    scores,
+				RoomId:          roomID,
+				WinnerUserId:    winnerUserID,
+				WinnerUsername:  winnerUsername,
+				TotalRounds:     int32(totalRounds),
+				DurationSeconds: durationSeconds,
+				FinalScores:     scores,
 			},
 		},
 	}, nil

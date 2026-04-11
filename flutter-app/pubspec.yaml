@@ -26,6 +26,9 @@ dependencies:
   animations: ^2.0.11             # Material motion transitions
   flutter_animate: ^4.5.0         # chainable animation helpers
 
+  # ── Persistence ───────────────────────────────────────────────
+  shared_preferences: ^2.2.2      # token + credential persistence
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
