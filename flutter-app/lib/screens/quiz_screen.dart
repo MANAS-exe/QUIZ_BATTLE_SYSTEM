@@ -197,6 +197,27 @@ class _QuizScreenState extends ConsumerState<QuizScreen>
 
   // ─── Top bar ──────────────────────────────────────────────
 
+  Future<void> _submitWithRetry(
+    String roomId, String userId, int round, String questionId, int answerIndex,
+  ) async {
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await ref.read(gameServiceProvider).submitAnswer(
+          roomId: roomId,
+          userId: userId,
+          roundNumber: round,
+          questionId: questionId,
+          answerIndex: answerIndex,
+        );
+        debugPrint('[QuizScreen] submitAnswer OK — round $round attempt $attempt');
+        return;
+      } catch (e) {
+        debugPrint('[QuizScreen] submitAnswer FAILED — round $round attempt $attempt: $e');
+        if (attempt < 3) await Future.delayed(const Duration(milliseconds: 500));
+      }
+    }
+  }
+
   void _exitGame() {
     showDialog(
       context: context,
@@ -502,17 +523,11 @@ class _QuizScreenState extends ConsumerState<QuizScreen>
                     final gs = ref.read(gameProvider);
                     if (gs.hasAnswered || gs.roundExpired) return;
                     ref.read(gameProvider.notifier).submitAnswer(i);
-                    // Fire-and-forget gRPC call — UI is already locked optimistically
-                    ref.read(gameServiceProvider).submitAnswer(
-                      roomId: gs.roomId!,
-                      userId: gs.userId!,
-                      roundNumber: gs.currentRound,
-                      questionId: gs.currentQuestion!.questionId,
-                      answerIndex: i,
-                    ).catchError((e) {
-                      debugPrint('[QuizScreen] submitAnswer gRPC error: $e');
-                      return false;
-                    });
+                    // Fire-and-forget gRPC call with retry
+                    _submitWithRetry(
+                      gs.roomId!, gs.userId!, gs.currentRound,
+                      gs.currentQuestion!.questionId, i,
+                    );
                   },
           ),
         );

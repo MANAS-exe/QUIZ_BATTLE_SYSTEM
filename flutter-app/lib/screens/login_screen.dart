@@ -24,6 +24,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    // Pre-fill saved username if available
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final saved = await ref.read(authProvider.notifier).getSavedUsername();
+      if (saved != null && mounted) {
+        _usernameCtrl.text = saved;
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _usernameCtrl.dispose();
     _passwordCtrl.dispose();

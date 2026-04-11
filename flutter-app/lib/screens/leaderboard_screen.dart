@@ -106,6 +106,10 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
                       const SizedBox(height: 16),
                       _buildRestListInline(rest, state.userId),
                     ],
+                    if (state.currentAnswerStreak >= 2) ...[
+                      const SizedBox(height: 16),
+                      _buildStreakBadge(state.currentAnswerStreak),
+                    ],
                   ],
                 ),
               ),
@@ -322,6 +326,71 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
     final prev = _prevRanks[userId];
     if (prev == null) return 0;
     return prev - currentRank; // positive = improved (rank number got smaller)
+  }
+
+  // ─── Answer streak badge ───────────────────────────────────
+
+  Widget _buildStreakBadge(int streak) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      width: double.infinity,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFFE74C3C).withValues(alpha: 0.15),
+            const Color(0xFFFFB830).withValues(alpha: 0.1),
+            const Color(0xFFE74C3C).withValues(alpha: 0.15),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFFB830).withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ...List.generate(
+                streak.clamp(0, 5),
+                (i) => Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                  child: Icon(
+                    Icons.local_fire_department_rounded,
+                    color: Color.lerp(
+                      const Color(0xFFFFB830),
+                      const Color(0xFFE74C3C),
+                      i / 5,
+                    ),
+                    size: 22,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '$streak',
+            style: const TextStyle(
+              color: Color(0xFFFFB830),
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          Text(
+            'Answer Streak',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    )
+        .animate()
+        .fadeIn(duration: 400.ms)
+        .slideY(begin: 0.15, end: 0, duration: 400.ms);
   }
 
   // ─── "Next round starting…" hint ──────────────────────────

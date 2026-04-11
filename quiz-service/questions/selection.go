@@ -52,9 +52,10 @@ func SelectForRoom(pool *goredis.Pool, db *mongo.Database, roomID string, player
 	}
 
 	// If not enough unseen questions, fill remaining slots by allowing repeats
+	// but still exclude questions already selected in this batch
 	if len(questionIDs) < count {
 		remaining := count - len(questionIDs)
-		fillIDs, err := sampleQuestions(ctx, db, "", remaining, nil)
+		fillIDs, err := sampleQuestions(ctx, db, "", remaining, questionIDs)
 		if err == nil && len(fillIDs) > 0 {
 			questionIDs = append(questionIDs, fillIDs...)
 		}
