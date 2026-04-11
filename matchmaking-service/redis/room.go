@@ -9,7 +9,7 @@ import (
 	"github.com/gomodule/redigo/redis"
 	"github.com/google/uuid"
 
-	"quiz-battle/matchmaking/models"
+	"quiz-battle/shared/models"
 )
 
 const (
@@ -23,12 +23,13 @@ func CreateRoom(pool *redis.Pool, players []models.Player) (*models.Room, error)
 	roomID := uuid.New().String()
 
 	// ── 1. Acquire distributed lock ───────────────────────────
-	if err := AcquireLock(pool, roomID); err != nil {
+	ownerToken, err := AcquireLock(pool, roomID)
+	if err != nil {
 		return nil, fmt.Errorf("acquire lock for room %s: %w", roomID, err)
 	}
 	// Always release the lock, even on error paths below.
 	defer func() {
-		if err := ReleaseLock(pool, roomID); err != nil {
+		if err := ReleaseLock(pool, roomID, ownerToken); err != nil {
 			log.Printf("⚠️  Failed to release lock for room %s: %v", roomID, err)
 		}
 	}()

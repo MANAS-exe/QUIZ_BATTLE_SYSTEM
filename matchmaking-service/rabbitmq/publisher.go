@@ -8,7 +8,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"quiz-battle/matchmaking/models"
+	"quiz-battle/shared/models"
 )
 
 const (

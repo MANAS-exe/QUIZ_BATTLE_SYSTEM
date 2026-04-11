@@ -113,47 +113,55 @@ class ResultsScreen extends ConsumerWidget {
   // ─── Trophy hero ──────────────────────────────────────────
 
   Widget _buildTrophyHero(bool isWinner) {
+    final heroColor = isWinner ? _gold : _coral;
+
     return Column(
       children: [
         Stack(
           alignment: Alignment.center,
           children: [
-            // Glow ring behind trophy
-            if (isWinner)
-              Container(
-                width: 130,
-                height: 130,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                        color: _gold.withValues(alpha: 0.3),
-                        blurRadius: 40,
-                        spreadRadius: 10),
-                  ],
-                ),
-              )
-                  .animate(onPlay: (c) => c.repeat(reverse: true))
-                  .scaleXY(begin: 0.9, end: 1.1, duration: 1200.ms),
+            // Outer glow ring
+            Container(
+              width: 140,
+              height: 140,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                      color: heroColor.withValues(alpha: 0.25),
+                      blurRadius: 40,
+                      spreadRadius: 8),
+                ],
+              ),
+            )
+                .animate(onPlay: (c) => c.repeat(reverse: true))
+                .scaleXY(begin: 0.9, end: 1.08, duration: 1400.ms),
+            // Inner circle
             Container(
               width: 110,
               height: 110,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: isWinner
-                    ? _gold.withValues(alpha: 0.15)
-                    : _surface,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    heroColor.withValues(alpha: 0.2),
+                    heroColor.withValues(alpha: 0.05),
+                  ],
+                ),
                 border: Border.all(
-                  color: isWinner
-                      ? _gold.withValues(alpha: 0.5)
-                      : Colors.white12,
+                  color: heroColor.withValues(alpha: 0.5),
                   width: 2.5,
                 ),
               ),
               alignment: Alignment.center,
-              child: Text(
-                isWinner ? '🏆' : '🎯',
-                style: const TextStyle(fontSize: 52),
+              child: Icon(
+                isWinner
+                    ? Icons.emoji_events_rounded
+                    : Icons.flag_rounded,
+                color: heroColor,
+                size: 52,
               ),
             )
                 .animate()
@@ -165,17 +173,27 @@ class ResultsScreen extends ConsumerWidget {
                     duration: 800.ms),
           ],
         ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 20),
         Text(
-          isWinner ? 'You Won! 🎉' : 'Match Over',
+          isWinner ? 'Victory!' : 'Match Over',
           style: TextStyle(
               color: isWinner ? _gold : Colors.white,
-              fontSize: 30,
+              fontSize: 28,
               fontWeight: FontWeight.w800),
         )
             .animate()
             .fadeIn(delay: 400.ms, duration: 400.ms)
             .slideY(begin: 0.2, end: 0, delay: 400.ms),
+        if (!isWinner) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Better luck next time',
+            style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.4),
+                fontSize: 14,
+                fontWeight: FontWeight.w500),
+          ).animate().fadeIn(delay: 500.ms, duration: 300.ms),
+        ],
       ],
     );
   }
@@ -439,7 +457,7 @@ class ResultsScreen extends ConsumerWidget {
           Expanded(
             flex: 2,
             child: ElevatedButton.icon(
-              icon: const Icon(Icons.replay_rounded, size: 18),
+              icon: const Icon(Icons.sports_esports_rounded, size: 18),
               label: const Text('Play Again'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: _coral,

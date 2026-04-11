@@ -268,6 +268,12 @@ db.questions.insertMany([
 
 print("✓ 20 SpeakX-style English questions inserted");
 
+// ── Create indexes ──────────────────────────────────────────
+db.users.createIndex({ username: 1 }, { unique: true });
+db.questions.createIndex({ difficulty: 1 });
+db.match_history.createIndex({ "players.userId": 1 });
+print("✓ Indexes created (users.username unique, questions.difficulty, match_history.players.userId)");
+
 print("\n── Breakdown ──────────────────────────");
 ["easy","medium","hard"].forEach(d =>
   print("  " + d + ": " + db.questions.countDocuments({ difficulty: d }))

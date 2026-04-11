@@ -80,6 +80,9 @@ class _QuizScreenState extends ConsumerState<QuizScreen>
       return;
     }
 
+    // Use the raw stream — the onDone handler in GameNotifier acts as safety net
+    // for stream close (creates synthetic MatchEnd from leaderboard).
+    // The reconnect service causes spurious retries when the game legitimately ends.
     final stream = ref
         .read(gameServiceProvider)
         .streamGameEvents(roomId, userId);
@@ -115,6 +118,17 @@ class _QuizScreenState extends ConsumerState<QuizScreen>
         _shakeCtrl.forward(from: 0);
       }
     });
+
+    // If phase already changed before this build (e.g. rapid RoundResult + MatchEnd)
+    if (gameState.phase == MatchPhase.finished) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.goNamed('results');
+      });
+    } else if (gameState.phase == MatchPhase.betweenRounds) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.goNamed('leaderboard');
+      });
+    }
 
     // Navigate on phase change
     ref.listen(matchPhaseProvider, (_, next) {
@@ -329,7 +343,8 @@ class _QuizScreenState extends ConsumerState<QuizScreen>
 
   Widget _buildTimerRow(GameState state) {
     final remaining = state.remainingSeconds;
-    final fraction = (remaining / 30.0).clamp(0.0, 1.0);
+    final totalSeconds = (state.currentQuestion?.timeLimitMs ?? 30000) / 1000;
+    final fraction = (remaining / totalSeconds).clamp(0.0, 1.0);
     final timerColor = state.roundExpired
         ? Colors.white24
         : remaining <= 5
