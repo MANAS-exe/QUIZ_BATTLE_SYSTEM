@@ -1,4 +1,4 @@
-# Quiz Battle — Architecture & Phase 1 Audit
+# Quiz Battle — Architecture & Audit
 
 ## System Architecture
 
@@ -6,7 +6,8 @@
 Flutter App
   ├── gRPC :50051 ──► Matchmaking Service   (Auth + Matchmaking)
   ├── gRPC :50052 ──► Quiz Engine Service   (Game loop + questions)
-  └── gRPC :50053 ──► Scoring Service       (Leaderboard + stats)
+  ├── gRPC :50053 ──► Scoring Service       (Leaderboard + stats)
+  └── HTTP :8081  ──► Payment Service       (Razorpay + subscriptions)
 
 RabbitMQ Exchange: sx (topic, durable)
   match.created      → quiz-match-created-queue     (Quiz Engine)
@@ -23,34 +24,39 @@ RabbitMQ Exchange: sx (topic, durable)
 
 | Service | Port | Binary | Responsibilities |
 |---------|------|--------|-----------------|
-| Matchmaking | `:50051` | `matchmaking-service/main.go` | Register/Login, JoinMatchmaking, SubscribeToMatch |
-| Quiz Engine | `:50052` | `quiz-service/main.go` | StreamGameEvents, SubmitAnswer, GetRoomQuestions |
+| Matchmaking | `:50051` | `matchmaking-service/main.go` | Register/Login/Google OAuth, JoinMatchmaking, SubscribeToMatch |
+| Quiz Engine | `:50052` | `quiz-service/main.go` | StreamGameEvents, SubmitAnswer, question selection, game loop |
 | Scoring | `:50053` | `scoring-service/main.go` | CalculateScore, GetLeaderboard |
+| Payment | `:8081` | `payment-service/main.go` | CreateOrder, VerifyPayment, GetStatus, GetHistory |
 
 ---
 
 ## Event Flow
 
 ```
-1. Player registers/logs in → Matchmaking Service (JWT issued)
-2. Player calls JoinMatchmaking → added to Redis sorted set (matchmaking:pool) keyed by rating
-3. Pool reaches ≥2 players → tryCreateRoom acquires Redis lock → ZPOPMIN → CreateRoom
-4. Room persisted to Redis (room:{id}:players, room:{id}:state) with 30-min TTL
-5. Matchmaking publishes match.created → RabbitMQ
-6. Quiz Engine consumes match.created → SelectForRoom → stores question IDs in room:{id}:questions
-7. Players call StreamGameEvents → first subscriber triggers game loop (sync.Once)
-8. Game loop: RunRound × totalRounds
-   a. LPOP next question from room:{id}:questions
-   b. Broadcast QuestionBroadcast event to all subscribers
-   c. 30-second countdown (TimerSync every second)
-   d. SETNX room:{id}:round:{n}:closed — only first goroutine proceeds (dedup guard)
-   e. Publish round.completed → RabbitMQ
-   f. Wait 2s for scoring consumer to process answers
-   g. Broadcast RoundResult + LeaderboardUpdate
-9. SubmitAnswer → HSETNX room:{id}:submitted:{round} (idempotency) → publish answer.submitted
-10. Scoring Worker consumes answer.submitted → validates vs MongoDB → Lua atomic UpdateScore
-11. After all rounds → publish match.finished → broadcast MatchEnd
-12. saveMatchHistory writes full document to MongoDB match_history collection
+1.  Player registers/logs in (email/password or Google) → JWT issued
+2.  _loadLocalStats() runs → login streak incremented via _updateLoginStreak()
+3.  If pendingReward != null → HomeScreen shows daily reward dialog
+4.  Player calls JoinMatchmaking → added to Redis sorted set (matchmaking:pool) keyed by rating
+5.  Pool reaches ≥2 players → tryCreateRoom acquires Redis lock → ZPOPMIN → CreateRoom
+6.  Room persisted to Redis (room:{id}:players, room:{id}:state) with 30-min TTL
+7.  Matchmaking publishes match.created → RabbitMQ
+8.  Quiz Engine consumes match.created → SelectForRoom → stores question IDs in room:{id}:questions
+9.  MatchFound received by Flutter → consumeDailyQuiz() called
+10. Players call StreamGameEvents → first subscriber triggers game loop (sync.Once)
+11. Game loop: RunRound × totalRounds
+    a. LPOP next question from room:{id}:questions
+    b. Broadcast QuestionBroadcast event to all subscribers
+    c. 30-second countdown (TimerSync every second)
+    d. SETNX room:{id}:round:{n}:closed — only first goroutine proceeds (dedup guard)
+    e. Publish round.completed → RabbitMQ
+    f. Wait 2s for scoring consumer to process answers
+    g. Broadcast RoundResult + LeaderboardUpdate
+       → client updates currentWinStreak (correct AND fastest = win streak +1)
+12. SubmitAnswer → HSETNX room:{id}:submitted:{round} (idempotency) → publish answer.submitted
+13. Scoring Worker consumes answer.submitted → validates vs MongoDB → Lua atomic UpdateScore
+14. After all rounds → publish match.finished → broadcast MatchEnd
+15. saveMatchHistory writes full document to MongoDB match_history collection
 ```
 
 ---
@@ -114,6 +120,9 @@ The `answer-processing-queue` uses dead-letter routing: after 3 failed attempts 
   "_id": ObjectId,
   "username": "string (unique index)",
   "password_hash": "bcrypt string",
+  "google_id": "string (Google sub, optional)",
+  "email": "string",
+  "picture_url": "string (Google CDN URL, optional)",
   "rating": 1000,
   "created_at": ISODate
 }
@@ -132,7 +141,7 @@ The `answer-processing-queue` uses dead-letter routing: after 3 failed attempts 
   "avgResponseTimeMs": 8000
 }
 ```
-30 questions seeded: 10 easy, 8 medium, 12 hard across 12 topics.
+60 questions seeded: 20 easy, 20 medium, 20 hard across 12 topics.
 
 ### match_history
 ```json
@@ -153,21 +162,35 @@ The `answer-processing-queue` uses dead-letter routing: after 3 failed attempts 
   "durationMs": 345000
 }
 ```
-Written by `saveMatchHistory` at the end of every match (inline in game loop).
-Used by question selection (`SelectForRoom`) to exclude previously-seen questions.
+
+### payments
+```json
+{
+  "_id": ObjectId,
+  "userId": "string",
+  "orderId": "string (Razorpay)",
+  "paymentId": "string (Razorpay)",
+  "plan": "monthly|yearly",
+  "status": "pending|captured|failed",
+  "amount": 49900,
+  "expiresAt": ISODate,
+  "createdAt": ISODate
+}
+```
 
 **Indexes:**
 - `users.username` — UNIQUE
 - `questions.difficulty` — for sampling by difficulty
 - `match_history.players.userId` — for fetching seen questions per player
+- `payments.userId` — for status lookups
 
 ---
 
 ## Seed Data
 
 ### Questions (mongo-init/init.js)
-- 30 questions, 3 difficulty levels, 12 topics
-- Run: `make seed` (requires MongoDB container)
+- 60 questions, 3 difficulty levels, 12 topics
+- Run: `make seed`
 
 ### Test Users (matchmaking-service/cmd/seed/main.go)
 | Username | Password | Rating |
@@ -179,18 +202,49 @@ Used by question selection (`SelectForRoom`) to exclude previously-seen question
 | evan | speakx123 | 1520 |
 | fiona | speakx123 | 890 |
 
-Run: `make seed-users` (requires MongoDB running locally)
+Run: `make seed-users`
 
 ---
 
 ## Flutter Client
 
+### Architecture
 - **3 gRPC channels**: matchmaking (50051), quiz (50052), scoring (50053)
+- **1 HTTP client**: payment service (8081)
 - **Auth**: JWT stored via SharedPreferences, sent as `Authorization: Bearer <token>` metadata
-- **State**: Riverpod `StateNotifier` (`GameProvider`, `AuthNotifier`)
+- **State**: Riverpod `StateNotifier` (`GameNotifier`, `AuthNotifier`)
 - **Reconnection**: `ReconnectService` wraps `StreamGameEvents` with exponential backoff (1s→2s→4s→8s→16s, max 5 retries)
 - **Timer**: Server-driven via `TimerSync` events (uses `DeadlineMs` absolute timestamp, not local drift-prone timer)
 - **Idempotent answers**: Double-tap guard via `_answerSubmitted` flag in `QuizScreen`
+
+### AuthState — key fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `isPremium` | bool | Paid Razorpay subscription |
+| `isEffectivelyPremium` | bool (getter) | `isPremium OR active premiumTrial` |
+| `dailyQuizUsed` | int | Games played today (resets at midnight) |
+| `bonusGamesRemaining` | int | Extra games from daily rewards; carry-over |
+| `isQuotaExhausted` | bool (getter) | True when free + bonus = 0 and not effectively premium |
+| `coins` | int | Total coins earned, never decreases |
+| `currentStreak` | int | Consecutive login-day streak |
+| `loginHistory` | List\<String\> | ISO dates of last 30 logins |
+| `premiumTrialExpiresAt` | String? | ISO datetime; sentinel copyWith for nullable clear |
+| `dailyRewardClaimedDate` | String? | ISO date of last claim; prevents double-claiming |
+| `pendingReward` | DailyReward? (getter) | Non-null = show popup today |
+
+### GameState — streak fields
+
+| Field | Description |
+|-------|-------------|
+| `currentAnswerStreak` | Consecutive correct answers this match |
+| `maxAnswerStreak` | Best answer streak this match |
+| `currentWinStreak` | Consecutive rounds won (correct AND fastest) |
+| `maxWinStreak` | Best win streak this match |
+
+Win streak is tracked in `GameNotifier._onRoundResult()` using
+`RoundResultEvent.fastestUserId`. Displayed in `leaderboard_screen.dart`
+(between-round screen) as a gold ⚡ badge when `currentWinStreak >= 2`.
 
 ---
 
@@ -199,7 +253,7 @@ Run: `make seed-users` (requires MongoDB running locally)
 | # | Requirement | Status | Notes |
 |---|-------------|--------|-------|
 | 1 | Flutter connected to real backend | ✅ | Real gRPC, no mock flags |
-| 2 | 3 truly separate services | ✅ | Ports 50051/50052/50053, independent binaries |
+| 2 | 3 truly separate services | ✅ | Ports 50051/50052/50053 + 8081, independent binaries |
 | 3 | All RabbitMQ consumers functional | ✅ | All 6 queues declared and consuming |
 | 4 | match_history persisted with full fields | ✅ | All fields including score, rank, avgResponseMs |
 | 5 | Double round completion prevented | ✅ | SETNX `room:{id}:round:{n}:closed` guard |
@@ -209,13 +263,13 @@ Run: `make seed-users` (requires MongoDB running locally)
 | 9 | Timer sync server→client | ✅ | TimerSync every 1s with DeadlineMs |
 | 10 | Idempotent answer processing | ✅ | HSETNX + HEXISTS double guard |
 | 11 | PlayerJoined event broadcast | ✅ | Broadcast on StreamGameEvents subscription |
-| 12 | Late joiner / mid-match join | ⚠️  | Gets current stream events; last_seen_round proto field unused |
+| 12 | Late joiner / mid-match join | ⚠️ | Gets live stream from reconnection point; past events not replayed |
 | 13 | Proper error handling | ✅ | gRPC status codes, ACK/NACK, try/catch in Flutter |
-| 14 | All proto RPCs implemented | ✅ | Register, Login, Join/Leave/Subscribe, Stream/Submit/GetQuestions, Score/GetLeaderboard |
-| 15 | Docker includes all services | ✅ | mongo + redis (--appendonly yes) + rabbitmq + 3 Go services, all with healthchecks |
-| 16 | Comprehensive seed data | ✅ | 30 questions + 6 test users (make seed + make seed-users) |
+| 14 | All proto RPCs implemented | ✅ | Register, Login, GoogleAuth, Join/Leave/Subscribe, Stream/Submit, Score/GetLeaderboard |
+| 15 | Docker includes all services | ✅ | mongo + redis + rabbitmq + 4 Go services, all with healthchecks |
+| 16 | Comprehensive seed data | ✅ | 60 questions + 6 test users |
 
-**Known limitation (item 12):** The `last_seen_round` field in `StreamRequest` proto is not used server-side to replay missed events. A reconnecting client gets the live stream from reconnection point but does not receive replayed past questions. This is acceptable for the demo and documented here as a Phase 2 improvement.
+**Known limitation (item 12):** The `last_seen_round` field in `StreamRequest` proto is not used server-side to replay missed events. A reconnecting client gets the live stream from reconnection point but does not receive replayed past questions. Documented as a Phase 3 improvement.
 
 ---
 
@@ -232,7 +286,7 @@ A fourth microservice handles premium subscriptions via Razorpay.
 | `GET /payment/status` | JWT | Returns `{ is_active, plan, expires_at }` |
 | `GET /payment/history` | JWT | Lists past payments |
 
-**Signature verification (no webhook required):**
+**Signature verification:**
 ```
 HMAC-SHA256(key_secret, order_id + "|" + payment_id) == razorpay_signature
 ```
@@ -241,21 +295,89 @@ HMAC-SHA256(key_secret, order_id + "|" + payment_id) == razorpay_signature
 
 **Port:** `:8081` — Flutter uses `http://10.0.2.2:8081` (Android emulator)
 
+See [razorpay.md](razorpay.md) for full integration details.
+
+---
+
+### Google Sign-In
+
+Full OAuth 2.0 flow:
+1. Flutter opens Google consent screen via `google_sign_in` SDK
+2. ID token exchanged at `POST http://localhost:8080/auth/google`
+3. Backend verifies with Google, upserts user in MongoDB (links accounts by email)
+4. JWT returned; profile picture URL stored and shown via `CachedNetworkImage`
+5. Silent re-authentication on app restart via `signInSilently()`
+
+See [google-auth.md](google-auth.md) for full setup and security details.
+
 ---
 
 ### Daily Quota
 
-Free users: **5 games/day**. Counter is stored in SharedPreferences (`dq_used` + `dq_date`).
+Free users: **5 games/day**. Counter stored in SharedPreferences (`dq_used` + `dq_date`).
 
-**Where it's consumed:** `matchmaking_screen.dart` → `_onMatchFound()` calls `authProvider.notifier.consumeDailyQuiz()` the moment a match is confirmed (not on queue entry, so failed matchmaking attempts don't burn the quota).
+**Where consumed:** `matchmaking_screen.dart → _onMatchFound()` calls
+`consumeDailyQuiz()` the moment a match is confirmed. Bonus games are consumed
+first; `dailyQuizUsed` only increments after bonus games run out.
 
-**Reset:** Date-based (`_today()` returns `YYYY-MM-DD`). On app start, if saved date ≠ today the counter resets to 0.
+**Reset:** Date-based. On login, if saved date ≠ today, counter resets to 0.
 
 ---
 
 ### Premium Sync Across Devices
 
-`AuthNotifier._syncPremiumFromServer()` is called after every login. It hits `GET /payment/status` and overwrites the local SharedPreferences `isPremium` flag with the server's authoritative value. This ensures a premium user logging in on a new device immediately sees the correct plan.
+`AuthNotifier._syncPremiumFromServer()` is called after every login. It hits
+`GET /payment/status` and updates local SharedPreferences with the server's
+authoritative `is_active` value. 5-second timeout prevents blocking login if
+the payment service is unreachable.
+
+**`isEffectivelyPremium`** — computed getter checking both paid premium AND
+active premium trial. All quota/upsell checks use this, not `isPremium` directly.
+
+---
+
+### Daily Rewards & Login Streak
+
+A full daily engagement system. All logic is **client-side** (SharedPreferences).
+Works offline.
+
+**Streak tracking:**
+- Login streak incremented at login via `_updateLoginStreak()` (not on match completion)
+- Uses history-based streak computation from `loginHistory` (last 30 ISO date strings)
+- Streak resets to 1 when a day is missed
+
+**Reward system:**
+- `rewardForDay(int streakDay)` returns a `DailyReward` (coins, bonus games, badge, trial)
+- Weekly cycle (days 1–7) with milestones at day 14 and day 30
+- Day-30 reward includes 7-day premium trial
+
+**Popup flow:**
+- `AuthState.pendingReward` getter returns non-null if today's reward is unclaimed
+- `HomeScreen.initState` uses `addPostFrameCallback` to show `_DailyRewardDialog`
+- `claimDailyReward()` is idempotent — calling it twice on the same day is a no-op
+
+**Coins system:**
+- Additive soft currency, never decreases
+- Shown on Profile → STREAK tab
+
+**Bonus games:**
+- Stack on top of free daily 5
+- Carry over between days
+- Consumed before `dailyQuizUsed` increments
+
+**Premium trial:**
+- Granted by day-30 streak milestone reward
+- Stored as `premiumTrialExpiresAt` (ISO datetime)
+- `isEffectivelyPremium` checks expiry in real-time — no logout needed
+
+**SharedPreferences keys added:**
+- `stats_<id>_coins` — total coins
+- `stats_<id>_bonusGames` — bonus games remaining
+- `stats_<id>_loginHistory` — JSON array of last 30 login dates
+- `stats_<id>_trialExpiry` — premium trial expiry datetime
+- `stats_<id>_rewardDate` — date of last reward claim
+
+See [daily-rewards.md](daily-rewards.md) for full spec.
 
 ---
 
@@ -269,8 +391,8 @@ Tracked in `GameState` alongside answer streak:
 | `currentWinStreak` | Consecutive rounds where player was **correct AND fastest** |
 
 Updated in `GameNotifier._onRoundResult()` using `RoundResultEvent.fastestUserId`.
-
-Displayed in `leaderboard_screen.dart` (between-round screen) as a gold lightning-bolt badge just below the fire-streak badge. Requires ≥ 2 consecutive wins to appear.
+Displayed in `leaderboard_screen.dart` (between-round screen) as a gold ⚡ badge
+just below the 🔥 answer streak badge. Requires ≥ 2 consecutive wins to appear.
 
 ---
 
@@ -280,6 +402,16 @@ Three buttons in `results_screen.dart`:
 - **Share** — copies result text to clipboard
 - **Home** — resets game state and navigates to `/home`
 - **Play Again** — resets game state and navigates to `/matchmaking`
+
+---
+
+### Profile Screen — STREAK Tab
+
+A 4th tab added to `ProfileScreen`:
+- **Streak Summary Card** — current streak + best streak
+- **Coins Card** — total coins + bonus games remaining
+- **30-Day Login Calendar** — 7-column grid; green = logged in, gold border = today, dim = missed
+- Three new badges: Week Warrior (7d), Fortnight Fighter (14d), Monthly Master (30d)
 
 ---
 
@@ -293,10 +425,11 @@ make infra
 make seed
 make seed-users
 
-# Start all 3 services
+# Start all services
 make run-matchmaking   # terminal 1
 make run-quiz          # terminal 2
 make run-scoring       # terminal 3
+cd payment-service && go run main.go  # terminal 4 (optional)
 
 # OR start everything with Docker
 make up
@@ -305,5 +438,6 @@ make up
 cd flutter-app && flutter run
 
 # Run tests
-make test
+make test              # Go tests
+make test-flutter      # Flutter tests (31 unit tests)
 ```

@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -25,7 +26,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
   }
 
   @override
@@ -76,6 +77,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                     Tab(text: 'LAST MATCH'),
                     Tab(text: 'BADGES'),
                     Tab(text: 'STREAK'),
+                    Tab(text: 'REFERRAL'),
                   ],
                 ),
               ),
@@ -89,6 +91,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             _LastMatchTab(auth: auth),
             _BadgesTab(auth: auth),
             _StreakTab(auth: auth),
+            _ReferralTab(auth: auth),
           ],
         ),
       ),
@@ -1387,6 +1390,577 @@ class _LegendDot extends StatelessWidget {
       ],
     );
   }
+}
+
+// ─────────────────────────────────────────
+// TAB 5 — REFERRAL
+// ─────────────────────────────────────────
+//
+// Shows the user's own referral code, referral stats, pending rewards,
+// an optional "Apply a code" section (for accounts ≤7 days old that haven't
+// been referred), and how to share.
+
+class _ReferralTab extends ConsumerStatefulWidget {
+  final AuthState auth;
+  const _ReferralTab({required this.auth});
+
+  @override
+  ConsumerState<_ReferralTab> createState() => _ReferralTabState();
+}
+
+class _ReferralTabState extends ConsumerState<_ReferralTab> {
+  final _applyCtrl = TextEditingController();
+  bool _applyLoading = false;
+  bool _claimLoading = false;
+  String? _applyError;
+  String? _applySuccess;
+
+  @override
+  void initState() {
+    super.initState();
+    // Sync on every tab open — catches rewards from users who applied our code
+    // since the last login (referrer would otherwise see stale data).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(authProvider.notifier).refreshReferralData();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _applyCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _onCopy(String code) async {
+    await Clipboard.setData(ClipboardData(text: code));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Code $code copied to clipboard!'),
+        backgroundColor: appSurface,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _onClaim() async {
+    setState(() { _claimLoading = true; });
+    final err = await ref.read(authProvider.notifier).claimReferralRewards();
+    if (!mounted) return;
+    setState(() { _claimLoading = false; });
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(err),
+          backgroundColor: appRed,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Rewards claimed! Check your coins and bonus games.'),
+          backgroundColor: Color(0xFF2ECC71),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _onApply() async {
+    final code = _applyCtrl.text.trim();
+    if (code.isEmpty) {
+      setState(() => _applyError = 'Enter a referral code first');
+      return;
+    }
+    setState(() { _applyLoading = true; _applyError = null; _applySuccess = null; });
+    final err =
+        await ref.read(authProvider.notifier).applyReferralCode(code);
+    if (!mounted) return;
+    if (err != null) {
+      setState(() { _applyLoading = false; _applyError = err; });
+    } else {
+      setState(() {
+        _applyLoading = false;
+        _applySuccess =
+            'Code applied! Your rewards are waiting — tap Claim to collect.';
+        _applyCtrl.clear();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Watch auth so the tab rebuilds when claimReferralRewards() updates state.
+    final auth = ref.watch(authProvider);
+    final code = auth.referralCode;
+
+    return RefreshIndicator(
+      color: appCoral,
+      backgroundColor: appSurface,
+      onRefresh: () => ref.read(authProvider.notifier).refreshReferralData(),
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
+        children: [
+        // ── Your referral code ─────────────────────────────────────
+        _SectionLabel('YOUR REFERRAL CODE'),
+        const SizedBox(height: 12),
+        _ReferralCodeCard(
+          code: code,
+          onCopy: code != null ? () => _onCopy(code) : null,
+        ).animate().fadeIn(duration: 350.ms).slideY(begin: 0.1, end: 0),
+
+        const SizedBox(height: 8),
+
+        // Share instructions
+        Text(
+          'Share this code with friends. When they register and enter your code,'
+          ' you both earn rewards.',
+          style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.4), fontSize: 12, height: 1.5),
+        ).animate().fadeIn(delay: 100.ms, duration: 350.ms),
+
+        const SizedBox(height: 24),
+
+        // ── Stats ──────────────────────────────────────────────────
+        _SectionLabel('REFERRAL STATS'),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _StatCard(
+                icon: Icons.group_add_rounded,
+                iconColor: appCoral,
+                value: '${auth.referralCount}',
+                label: 'Friends Invited',
+                delay: 150.ms,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StatCard(
+                icon: Icons.monetization_on_rounded,
+                iconColor: appGold,
+                value: '${auth.totalReferralCoins + auth.pendingReferralCoins}',
+                label: 'Coins Earned',
+                delay: 200.ms,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StatCard(
+                icon: Icons.people_rounded,
+                iconColor: Colors.white54,
+                value: '${10 - auth.referralCount.clamp(0, 10)}',
+                label: 'Slots Left',
+                delay: 250.ms,
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 24),
+
+        // ── Pending rewards ────────────────────────────────────────
+        if (auth.hasPendingReferralReward) ...[
+          _SectionLabel('PENDING REWARDS'),
+          const SizedBox(height: 12),
+          _PendingRewardCard(
+            loading: _claimLoading,
+            onClaim: _onClaim,
+          ).animate().fadeIn(delay: 200.ms, duration: 350.ms),
+          const SizedBox(height: 24),
+        ],
+
+        // ── Apply a referral code ──────────────────────────────────
+        // Only show this section if the user has NOT yet been referred.
+        // Already-referred users have no need for this input.
+        if (!auth.hasPendingReferralReward ||
+            auth.referralCode == null) ...[
+          _SectionLabel('HAVE A REFERRAL CODE?'),
+          const SizedBox(height: 12),
+          _ApplyCodeSection(
+            controller: _applyCtrl,
+            loading: _applyLoading,
+            error: _applyError,
+            success: _applySuccess,
+            onApply: _onApply,
+          ).animate().fadeIn(delay: 300.ms, duration: 350.ms),
+          const SizedBox(height: 24),
+        ],
+
+        // ── How it works ───────────────────────────────────────────
+        _SectionLabel('HOW IT WORKS'),
+        const SizedBox(height: 12),
+        _HowItWorksCard()
+            .animate()
+            .fadeIn(delay: 350.ms, duration: 350.ms),
+      ],
+    ),
+    );
+  }
+}
+
+// ── Referral code card ─────────────────────────────────────────────────────
+
+class _ReferralCodeCard extends StatelessWidget {
+  final String? code;
+  final VoidCallback? onCopy;
+  const _ReferralCodeCard({required this.code, required this.onCopy});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            appCoral.withValues(alpha: 0.22),
+            appCoral.withValues(alpha: 0.08),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: appCoral.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.card_giftcard_rounded, color: appCoral, size: 28),
+          const SizedBox(width: 16),
+          Expanded(
+            child: code != null
+                ? Text(
+                    code!,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 28,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 6,
+                    ),
+                  )
+                : Text(
+                    'Loading...',
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.3),
+                        fontSize: 18),
+                  ),
+          ),
+          if (onCopy != null)
+            IconButton(
+              onPressed: onCopy,
+              icon: const Icon(Icons.copy_rounded, color: appCoral, size: 22),
+              tooltip: 'Copy code',
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Pending reward card ────────────────────────────────────────────────────
+
+class _PendingRewardCard extends StatelessWidget {
+  final bool loading;
+  final VoidCallback onClaim;
+  const _PendingRewardCard({required this.loading, required this.onClaim});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            appGold.withValues(alpha: 0.18),
+            appGold.withValues(alpha: 0.06),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: appGold.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: appGold.withValues(alpha: 0.15),
+            ),
+            child: const Icon(Icons.redeem_rounded, color: appGold, size: 22),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Rewards ready to claim!',
+                  style: TextStyle(
+                    color: appGold,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Coins + bonus games are waiting for you.',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          ElevatedButton(
+            onPressed: loading ? null : onClaim,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: appGold,
+              foregroundColor: Colors.black,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              elevation: 0,
+            ),
+            child: loading
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                        color: Colors.black, strokeWidth: 2),
+                  )
+                : const Text('Claim',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Apply code section ─────────────────────────────────────────────────────
+
+class _ApplyCodeSection extends StatelessWidget {
+  final TextEditingController controller;
+  final bool loading;
+  final String? error;
+  final String? success;
+  final VoidCallback onApply;
+
+  const _ApplyCodeSection({
+    required this.controller,
+    required this.loading,
+    required this.error,
+    required this.success,
+    required this.onApply,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: appSurface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'If a friend gave you their code, enter it here to earn bonus rewards.',
+            style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.45),
+                fontSize: 12,
+                height: 1.5),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  textCapitalization: TextCapitalization.characters,
+                  maxLength: 6,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 4,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'XXXXXX',
+                    hintStyle: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.2),
+                        letterSpacing: 4),
+                    counterText: '',
+                    filled: true,
+                    fillColor: Colors.white.withValues(alpha: 0.05),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 14),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide:
+                          BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide:
+                          BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide:
+                          const BorderSide(color: appCoral, width: 1.5),
+                    ),
+                  ),
+                  onSubmitted: (_) => onApply(),
+                ),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton(
+                onPressed: loading ? null : onApply,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: appCoral,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 18, vertical: 16),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  elevation: 0,
+                ),
+                child: loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2),
+                      )
+                    : const Text('Apply',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14)),
+              ),
+            ],
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 8),
+            Text(error!,
+                style: const TextStyle(color: appRed, fontSize: 12))
+                .animate()
+                .shakeX(hz: 3, amount: 4),
+          ],
+          if (success != null) ...[
+            const SizedBox(height: 8),
+            Text(success!,
+                style: const TextStyle(
+                    color: Color(0xFF2ECC71), fontSize: 12))
+                .animate()
+                .fadeIn(duration: 200.ms),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ── How it works card ──────────────────────────────────────────────────────
+
+class _HowItWorksCard extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    const steps = [
+      _HowStep(
+        icon: Icons.share_rounded,
+        title: 'Share your code',
+        subtitle: 'Send your 6-letter code to a friend who doesn\'t have the app yet.',
+      ),
+      _HowStep(
+        icon: Icons.person_add_rounded,
+        title: 'Friend registers',
+        subtitle: 'They enter your code during registration (within 7 days of signing up).',
+      ),
+      _HowStep(
+        icon: Icons.redeem_rounded,
+        title: 'Both earn rewards',
+        subtitle: 'You get +200 coins & +2 bonus games. They get +100 coins & +1 bonus game.',
+      ),
+      _HowStep(
+        icon: Icons.info_outline_rounded,
+        title: 'Limits',
+        subtitle: 'Max 10 successful referrals per account. Each user can apply one code.',
+      ),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: appSurface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        children: steps
+            .map((s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: appCoral.withValues(alpha: 0.12),
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(s.icon, color: appCoral, size: 18),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(s.title,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700)),
+                            const SizedBox(height: 2),
+                            Text(s.subtitle,
+                                style: TextStyle(
+                                    color:
+                                        Colors.white.withValues(alpha: 0.45),
+                                    fontSize: 11,
+                                    height: 1.4)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ))
+            .toList(),
+      ),
+    );
+  }
+}
+
+class _HowStep {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  const _HowStep(
+      {required this.icon, required this.title, required this.subtitle});
 }
 
 // ─────────────────────────────────────────

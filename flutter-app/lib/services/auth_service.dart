@@ -179,6 +179,14 @@ class AuthState {
   final String? premiumTrialExpiresAt;   // ISO datetime; null = no active trial
   final String? dailyRewardClaimedDate;  // ISO date of last reward claim
 
+  // ── Referral ────────────────────────────────────────────────────
+  final String? referralCode;         // this user's shareable 6-char code (e.g. "QB4X9K")
+  final int referralCount;            // number of successful referrals made
+  final int totalReferralCoins;       // lifetime coins earned through referrals
+  final bool hasPendingReferralReward; // true if server has unclaimed coins/bonus
+  final int pendingReferralCoins;      // coins waiting to be claimed (shown in stats before user claims)
+  final bool alreadyReferred;          // true if this user applied someone else's code (eligible for discount)
+
   const AuthState({
     this.token,
     this.userId,
@@ -200,6 +208,12 @@ class AuthState {
     this.loginHistory = const [],
     this.premiumTrialExpiresAt,
     this.dailyRewardClaimedDate,
+    this.referralCode,
+    this.referralCount = 0,
+    this.totalReferralCoins = 0,
+    this.hasPendingReferralReward = false,
+    this.pendingReferralCoins = 0,
+    this.alreadyReferred = false,
   });
 
   // ── Computed getters ───────────────────────────────────────────
@@ -260,6 +274,12 @@ class AuthState {
     // Use sentinel so callers can explicitly set this to null.
     Object? premiumTrialExpiresAt = _unset,
     String? dailyRewardClaimedDate,
+    String? referralCode,
+    int? referralCount,
+    int? totalReferralCoins,
+    bool? hasPendingReferralReward,
+    int? pendingReferralCoins,
+    bool? alreadyReferred,
   }) {
     return AuthState(
       token: token ?? this.token,
@@ -285,6 +305,13 @@ class AuthState {
           : premiumTrialExpiresAt as String?,
       dailyRewardClaimedDate:
           dailyRewardClaimedDate ?? this.dailyRewardClaimedDate,
+      referralCode: referralCode ?? this.referralCode,
+      referralCount: referralCount ?? this.referralCount,
+      totalReferralCoins: totalReferralCoins ?? this.totalReferralCoins,
+      hasPendingReferralReward:
+          hasPendingReferralReward ?? this.hasPendingReferralReward,
+      pendingReferralCoins: pendingReferralCoins ?? this.pendingReferralCoins,
+      alreadyReferred: alreadyReferred ?? this.alreadyReferred,
     );
   }
 }
@@ -365,6 +392,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _saveGoogleSession(userId, idToken);
       await _loadLocalStats();
       await _syncPremiumFromServer();
+      await _syncReferralFromServer();
       return null;
     } on PlatformException catch (e) {
       // iOS SDK throws PlatformException when GoogleService-Info.plist is
@@ -467,6 +495,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         await _saveCredentials(username, password);
         await _loadLocalStats();
         await _syncPremiumFromServer();
+        await _syncReferralFromServer();
         return null;
       }
       return res.message;
@@ -493,6 +522,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         await _saveCredentials(username, password);
         await _loadLocalStats();
         await _syncPremiumFromServer();
+        await _syncReferralFromServer();
         return null;
       }
       return res.message;
@@ -549,6 +579,190 @@ class AuthNotifier extends StateNotifier<AuthState> {
     } catch (e) {
       // Non-fatal — fall back to locally cached value
       debugPrint('[AuthService] premium sync failed: $e');
+    }
+  }
+
+  // ── Referral ───────────────────────────────────────────────────
+
+  /// Fetches the user's referral code and stats from the backend and syncs to
+  /// local state + SharedPreferences. Called after every login.
+  ///
+  /// If the server is unreachable, the cached code/count from SharedPreferences
+  /// is used so the UI doesn't go blank offline.
+  ///
+  /// Side effect: `hasPendingReferralReward` is set to true when the server
+  /// reports pending_coins > 0 or pending_bonus > 0. The Profile → REFERRAL
+  /// tab reads this flag to show a claim button.
+  /// Public wrapper — called by the REFERRAL tab on open to catch rewards that
+  /// arrived since the last login (e.g., someone used the user's code while the
+  /// app was already running).
+  Future<void> refreshReferralData() => _syncReferralFromServer();
+
+  Future<void> _syncReferralFromServer() async {
+    final token = state.token;
+    if (token == null) return;
+
+    final host = defaultTargetPlatform == TargetPlatform.android
+        ? '10.0.2.2'
+        : 'localhost';
+    try {
+      final resp = await http
+          .get(
+            Uri.parse('http://$host:8080/referral/code'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 5));
+
+      if (resp.statusCode == 200) {
+        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+        final code = body['code'] as String? ?? '';
+        final count = (body['referral_count'] as num?)?.toInt() ?? 0;
+        final totalCoins = (body['total_coins_earned'] as num?)?.toInt() ?? 0;
+        final pendingCoins = (body['pending_coins'] as num?)?.toInt() ?? 0;
+        final pendingBonus = (body['pending_bonus'] as num?)?.toInt() ?? 0;
+        final hasPending = pendingCoins > 0 || pendingBonus > 0;
+        final alreadyReferred = body['already_referred'] as bool? ?? false;
+
+        state = state.copyWith(
+          referralCode: code.isNotEmpty ? code : null,
+          referralCount: count,
+          totalReferralCoins: totalCoins,
+          hasPendingReferralReward: hasPending,
+          pendingReferralCoins: pendingCoins,
+          alreadyReferred: alreadyReferred,
+        );
+
+        final prefs = await SharedPreferences.getInstance();
+        if (code.isNotEmpty) {
+          await prefs.setString('${_statsKey}_referralCode', code);
+        }
+        await prefs.setInt('${_statsKey}_referralCount', count);
+        await prefs.setInt('${_statsKey}_totalReferralCoins', totalCoins);
+        await prefs.setBool('${_statsKey}_alreadyReferred', alreadyReferred);
+      }
+    } catch (e) {
+      // Non-fatal — fall back to cached values.
+      debugPrint('[Referral] sync failed: $e');
+      final prefs = await SharedPreferences.getInstance();
+      final cachedCode = prefs.getString('${_statsKey}_referralCode');
+      if (cachedCode != null) {
+        state = state.copyWith(
+          referralCode: cachedCode,
+          referralCount: prefs.getInt('${_statsKey}_referralCount') ?? 0,
+          totalReferralCoins:
+              prefs.getInt('${_statsKey}_totalReferralCoins') ?? 0,
+          alreadyReferred:
+              prefs.getBool('${_statsKey}_alreadyReferred') ?? false,
+        );
+      }
+    }
+  }
+
+  /// Applies a friend's referral code to the authenticated user's account.
+  ///
+  /// Returns null on success, or an error message string on failure.
+  ///
+  /// Constraints enforced server-side:
+  ///  - Code must be unused (user hasn't been referred before)
+  ///  - Account must be ≤7 days old
+  ///  - Cannot be your own code
+  ///  - Referrer must be under the 10-referral cap
+  ///
+  /// On success, pending rewards are added to the user's account on the server.
+  /// Call [claimReferralRewards] to apply them to local state.
+  Future<String?> applyReferralCode(String code) async {
+    final token = state.token;
+    if (token == null) return 'Not logged in';
+    final trimmed = code.trim();
+    if (trimmed.isEmpty) return 'Referral code cannot be empty';
+
+    final host = defaultTargetPlatform == TargetPlatform.android
+        ? '10.0.2.2'
+        : 'localhost';
+    try {
+      final resp = await http
+          .post(
+            Uri.parse('http://$host:8080/referral/apply'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({'code': trimmed.toUpperCase()}),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (resp.statusCode == 200 && body['success'] == true) {
+        // Server applied the code — sync to pick up pending rewards.
+        await _syncReferralFromServer();
+        return null; // success
+      }
+      return body['message'] as String? ?? 'Failed to apply referral code';
+    } catch (e) {
+      debugPrint('[Referral] applyCode error: $e');
+      return 'Network error — please check your connection';
+    }
+  }
+
+  /// Claims all pending referral rewards from the server and applies them to
+  /// local coin + bonus game balances.
+  ///
+  /// Returns null on success (including "no rewards to claim"), or an error
+  /// message string on failure.
+  ///
+  /// This is idempotent: calling it when there are no pending rewards is a
+  /// no-op that returns null.
+  Future<String?> claimReferralRewards() async {
+    final token = state.token;
+    if (token == null) return 'Not logged in';
+
+    final host = defaultTargetPlatform == TargetPlatform.android
+        ? '10.0.2.2'
+        : 'localhost';
+    try {
+      final resp = await http
+          .get(
+            Uri.parse('http://$host:8080/referral/claim'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 10));
+
+      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (resp.statusCode == 200 && body['success'] == true) {
+        final coins = (body['reward_coins'] as num?)?.toInt() ?? 0;
+        final bonus = (body['reward_bonus'] as num?)?.toInt() ?? 0;
+
+        if (coins > 0 || bonus > 0) {
+          final newCoins = state.coins + coins;
+          final newBonus = state.bonusGamesRemaining + bonus;
+          final newTotalReferralCoins = state.totalReferralCoins + coins;
+
+          state = state.copyWith(
+            coins: newCoins,
+            bonusGamesRemaining: newBonus,
+            totalReferralCoins: newTotalReferralCoins,
+            hasPendingReferralReward: false,
+            pendingReferralCoins: 0,
+          );
+
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setInt('${_statsKey}_coins', newCoins);
+          await prefs.setInt('${_statsKey}_bonusGames', newBonus);
+          await prefs.setInt(
+              '${_statsKey}_totalReferralCoins', newTotalReferralCoins);
+
+          debugPrint(
+              '[Referral] claimed +$coins coins, +$bonus bonus games');
+        } else {
+          // No rewards — clear pending flag so the UI button disappears.
+          state = state.copyWith(hasPendingReferralReward: false);
+        }
+        return null; // success
+      }
+      return body['message'] as String? ?? 'Server error';
+    } catch (e) {
+      debugPrint('[Referral] claimRewards error: $e');
+      return 'Network error — please check your connection';
     }
   }
 
@@ -779,6 +993,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
     final coins = prefs.getInt('${key}_coins') ?? 0;
     final bonusGames = prefs.getInt('${key}_bonusGames') ?? 0;
 
+    // Referral cache — real values are synced from server after _loadLocalStats()
+    final cachedReferralCode = prefs.getString('${key}_referralCode');
+    final cachedReferralCount = prefs.getInt('${key}_referralCount') ?? 0;
+    final cachedTotalReferralCoins =
+        prefs.getInt('${key}_totalReferralCoins') ?? 0;
+    final cachedAlreadyReferred =
+        prefs.getBool('${key}_alreadyReferred') ?? false;
+
     LastMatchData? lastMatch;
     final lmWon = prefs.getBool('${key}_lm_won');
     if (lmWon != null) {
@@ -807,6 +1029,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
       coins: coins,
       bonusGamesRemaining: bonusGames,
       lastMatch: lastMatch,
+      // Referral cache — will be refreshed by _syncReferralFromServer() below
+      referralCode: cachedReferralCode,
+      referralCount: cachedReferralCount,
+      totalReferralCoins: cachedTotalReferralCoins,
+      alreadyReferred: cachedAlreadyReferred,
     );
 
     // Update login streak on every login (streak ≠ match streak)

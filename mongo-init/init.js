@@ -398,7 +398,19 @@ print("✓ 30 SpeakX-style English questions inserted");
 db.users.createIndex({ username: 1 }, { unique: true });
 db.questions.createIndex({ difficulty: 1 });
 db.match_history.createIndex({ "players.userId": 1 });
+
+// Referral system indexes
+// sparse: true means documents WITHOUT referral_code (old users before the system)
+// are not indexed, so the unique constraint doesn't reject them.
+db.users.createIndex({ referral_code: 1 }, { unique: true, sparse: true });
+
+// referrals collection: fast lookup by referrer (for /referral/history)
+// and unique constraint on referee (each user can only be referred once).
+db.referrals.createIndex({ referrer_id: 1 });
+db.referrals.createIndex({ referee_id: 1 }, { unique: true });
+
 print("✓ Indexes created (users.username unique, questions.difficulty, match_history.players.userId)");
+print("✓ Referral indexes created (users.referral_code unique sparse, referrals.referrer_id, referrals.referee_id unique)");
 
 print("\n── Breakdown ──────────────────────────");
 ["easy","medium","hard"].forEach(d =>

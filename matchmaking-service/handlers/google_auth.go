@@ -82,14 +82,15 @@ type googleAuthResponse struct {
 // We use a separate projection struct to avoid touching the email/password auth path.
 
 type googleUserDoc struct {
-	ID         primitive.ObjectID `bson:"_id,omitempty"`
-	Username   string             `bson:"username"`
-	GoogleID   string             `bson:"google_id"`
-	Email      string             `bson:"email"`
-	PictureURL string             `bson:"picture_url"`
-	Rating     int                `bson:"rating"`
-	CreatedAt  time.Time          `bson:"created_at"`
-	UpdatedAt  time.Time          `bson:"updated_at"`
+	ID           primitive.ObjectID `bson:"_id,omitempty"`
+	Username     string             `bson:"username"`
+	GoogleID     string             `bson:"google_id"`
+	Email        string             `bson:"email"`
+	PictureURL   string             `bson:"picture_url"`
+	Rating       int                `bson:"rating"`
+	CreatedAt    time.Time          `bson:"created_at"`
+	UpdatedAt    time.Time          `bson:"updated_at"`
+	ReferralCode string             `bson:"referral_code"`
 }
 
 // ─────────────────────────────────────────
@@ -299,14 +300,23 @@ func (h *GoogleAuthHandler) upsertGoogleUser(ctx context.Context, info *googleTo
 		return nil, false, fmt.Errorf("ensure unique username: %w", err)
 	}
 
+	// Generate a referral code at creation time so the user can immediately share.
+	// Non-fatal: the code will be lazily generated on the first GET /referral/code.
+	referralCode, codeErr := generateUniqueCode(ctx, h.users)
+	if codeErr != nil {
+		log.Printf("⚠️  google: failed to generate referral code for new user %s: %v", username, codeErr)
+		referralCode = ""
+	}
+
 	newUser := googleUserDoc{
-		Username:   username,
-		GoogleID:   info.Sub,
-		Email:      info.Email,
-		PictureURL: info.Picture,
-		Rating:     1000,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		Username:     username,
+		GoogleID:     info.Sub,
+		Email:        info.Email,
+		PictureURL:   info.Picture,
+		Rating:       1000,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		ReferralCode: referralCode,
 	}
 
 	result, err := h.users.InsertOne(ctx, newUser)

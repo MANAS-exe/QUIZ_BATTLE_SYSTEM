@@ -36,13 +36,14 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final _usernameCtrl = TextEditingController();
-  final _passwordCtrl = TextEditingController();
+  final _usernameCtrl  = TextEditingController();
+  final _passwordCtrl  = TextEditingController();
+  final _referralCtrl  = TextEditingController(); // optional referral code on register
 
-  bool _showEmailForm = false;  // collapse email/password by default
-  bool _isRegister    = false;  // toggle between login and register
-  bool _googleLoading = false;
-  bool _emailLoading  = false;
+  bool _showEmailForm  = false; // collapse email/password by default
+  bool _isRegister     = false; // toggle between login and register
+  bool _googleLoading  = false;
+  bool _emailLoading   = false;
   String? _error;
 
   @override
@@ -58,6 +59,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   void dispose() {
     _usernameCtrl.dispose();
     _passwordCtrl.dispose();
+    _referralCtrl.dispose();
     super.dispose();
   }
 
@@ -91,9 +93,25 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (!mounted) return;
     if (err != null) {
       setState(() { _emailLoading = false; _error = err; });
-    } else {
-      context.goNamed('home');
+      return;
     }
+
+    // After successful REGISTRATION, apply the optional referral code silently.
+    // We don't block navigation on failure — a bad code shouldn't stop the user
+    // from entering the app.
+    if (_isRegister) {
+      final referralCode = _referralCtrl.text.trim();
+      if (referralCode.isNotEmpty) {
+        // Fire-and-forget — errors are logged but not surfaced in the UI
+        notifier.applyReferralCode(referralCode).then((applyErr) {
+          if (applyErr != null) {
+            debugPrint('[LoginScreen] referral apply failed: $applyErr');
+          }
+        });
+      }
+    }
+
+    if (mounted) context.goNamed('home');
   }
 
   // ── Build ──────────────────────────────────────────────────────
@@ -281,6 +299,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           icon: Icons.lock_outline_rounded,
           obscure: true,
         ),
+        // Referral code field — only shown when registering a new account.
+        // Optional: leaving it blank is fine.
+        if (_isRegister) ...[
+          const SizedBox(height: 12),
+          _buildTextField(
+            controller: _referralCtrl,
+            hint: 'Referral code (optional)',
+            icon: Icons.card_giftcard_rounded,
+            textCapitalization: TextCapitalization.characters,
+          ),
+        ],
         const SizedBox(height: 16),
         SizedBox(
           width: double.infinity,
@@ -359,10 +388,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     required String hint,
     required IconData icon,
     bool obscure = false,
+    TextCapitalization textCapitalization = TextCapitalization.none,
   }) {
     return TextField(
       controller: controller,
       obscureText: obscure,
+      textCapitalization: textCapitalization,
       style: const TextStyle(color: Colors.white, fontSize: 15),
       onSubmitted: (_) => _onEmailSubmit(),
       decoration: InputDecoration(

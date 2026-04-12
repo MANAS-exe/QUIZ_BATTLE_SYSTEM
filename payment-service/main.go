@@ -44,6 +44,7 @@ func main() {
 	// ── Routes ────────────────────────────────────────────────
 	mux := http.NewServeMux()
 	mux.HandleFunc("/payment/create-order", withCORS(paymentHandler.CreateOrder))
+	mux.HandleFunc("/payment/validate-coupon", withCORS(paymentHandler.ValidateCoupon))
 	mux.HandleFunc("/payment/verify", withCORS(paymentHandler.VerifyPayment))
 	mux.HandleFunc("/payment/status", withCORS(paymentHandler.GetStatus))
 	mux.HandleFunc("/payment/history", withCORS(paymentHandler.GetHistory))

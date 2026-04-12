@@ -138,9 +138,25 @@ final res = await _callGoogleAuthEndpoint(idToken);
 // POST http://localhost:8080/auth/google
 // { "id_token": "eyJ..." }
 
-// 4. Store JWT + navigate
-state = AuthState(token: res['token'], ...);
+// 4. Build AuthState from response
+state = AuthState(
+  token: res['token'],
+  userId: res['user_id'],
+  username: res['username'],
+  pictureUrl: res['picture_url'] ?? account.photoUrl,
+  ...
+);
+
+// 5. Post-login pipeline (same as email/password)
+await _saveGoogleSession(userId, idToken);
+await _loadLocalStats();     // loads streak, coins, quota, login history
+await _syncPremiumFromServer(); // syncs paid premium from payment service
 ```
+
+After `_loadLocalStats()` returns, the login streak is already updated via
+`_updateLoginStreak()`. If the user has an unclaimed daily reward, `pendingReward`
+on `AuthState` will be non-null, and `HomeScreen.initState` will show the reward
+dialog on the next frame.
 
 ---
 

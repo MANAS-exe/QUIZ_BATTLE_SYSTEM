@@ -237,6 +237,108 @@ The timer loop checks both keys and advances when the higher count matches the a
 
 ---
 
+## 22. Profile Picture Not Persisting Across Screens
+
+**Symptom:** Google profile picture showed on the Home screen but not on the Profile screen or the Matchmaking lobby. Other screens displayed a plain text initial letter even when a `pictureUrl` was set.
+
+**Root Cause:** Only `home_screen.dart` had the `_Avatar` widget with `CachedNetworkImage`. The Profile screen's `_ProfileHeader` and the matchmaking lobby both hardcoded `Text(initial)` in `CircleAvatar`, ignoring `auth.pictureUrl` entirely.
+
+**Fix:**
+- `profile_screen.dart → _ProfileHeader`: Added `_buildAvatar(pictureUrl, initial)` and `_initialCircle(initial)` methods using `CachedNetworkImage`, matching the home screen pattern.
+- `matchmaking_screen.dart → _buildLobby()`: Added `_buildLobbyAvatar(pictureUrl, initial)` replacing the hardcoded `Text(initial)`.
+
+---
+
+## 23. Login Streak Incrementing on Match Completion Instead of Login
+
+**Symptom:** The streak counter only increased after finishing a match, not on simply opening the app. A player who logged in but didn't play would not have their streak counted.
+
+**Root Cause:** `_updateDailyStreak()` was called inside `recordMatchResult()`, meaning a match had to be played to trigger a streak update.
+
+**Fix (`auth_service.dart`):**
+- Moved `_updateDailyStreak()` → renamed to `_updateLoginStreak()` and called from `_loadLocalStats()`, which runs after every successful login (email/password, Google, or session restore).
+- Replaced `_lastPlayed` SharedPreferences key with a `loginHistory` JSON array (last 30 ISO dates).
+- Streak computed from history via `_computeStreakFromHistory()` — walks backwards from today counting consecutive days. More robust against clock drift and app reinstalls.
+- `recordMatchResult()` no longer touches streak at all.
+
+---
+
+## 24. `isQuotaExhausted` Ignoring Bonus Games
+
+**Symptom:** If a player had bonus games remaining, the Play button still showed "Upgrade to Play More" and reported quota as exhausted.
+
+**Root Cause:** `isQuotaExhausted` only checked `dailyQuizUsed >= kFreeQuotaPerDay` without considering `bonusGamesRemaining`. Similarly, `dailyQuizRemaining` did not add bonus games to the total.
+
+**Fix (`auth_service.dart`):**
+```dart
+bool get isQuotaExhausted =>
+    !isEffectivelyPremium &&
+    dailyQuizUsed >= kFreeQuotaPerDay &&
+    bonusGamesRemaining == 0;
+
+int get dailyQuizRemaining {
+  if (isEffectivelyPremium) return kPremiumQuota;
+  final freeLeft = (kFreeQuotaPerDay - dailyQuizUsed).clamp(0, kFreeQuotaPerDay);
+  return freeLeft + bonusGamesRemaining;
+}
+```
+
+`consumeDailyQuiz()` now drains bonus games before incrementing `dailyQuizUsed`.
+
+---
+
+## 25. Premium Trial Not Reflected Without Logout
+
+**Symptom:** When a user claimed a day-30 streak reward granting a 7-day premium trial, the upsell card and quota restrictions did not update until the next app restart.
+
+**Root Cause:** The upsell card and quota checks used `auth.isPremium` (paid flag) directly. `premiumTrialExpiresAt` was stored in state but nothing read it.
+
+**Fix:** Introduced `isEffectivelyPremium` getter:
+```dart
+bool get isEffectivelyPremium {
+  if (isPremium) return true;
+  if (premiumTrialExpiresAt == null) return false;
+  return DateTime.tryParse(premiumTrialExpiresAt!)?.isAfter(DateTime.now()) ?? false;
+}
+```
+All quota checks, upsell card visibility, leaderboard limits, and the quota card variant now use `isEffectivelyPremium`. Since it's a computed getter on `AuthState`, it reflects reality on every widget rebuild without requiring a logout.
+
+---
+
+## 26. `copyWith` Could Not Clear `premiumTrialExpiresAt` to Null
+
+**Symptom:** After a premium trial expired, calling `state.copyWith(premiumTrialExpiresAt: null)` had no effect — the old expiry date was preserved.
+
+**Root Cause:** Standard `copyWith` pattern uses `field ?? this.field`, which treats an explicit `null` argument the same as "don't change". There was no way to distinguish "set to null" from "leave unchanged".
+
+**Fix:** Sentinel object pattern:
+```dart
+static const _unset = Object();
+
+AuthState copyWith({
+  Object? premiumTrialExpiresAt = _unset,
+  ...
+}) => AuthState(
+  premiumTrialExpiresAt: premiumTrialExpiresAt == _unset
+      ? this.premiumTrialExpiresAt
+      : premiumTrialExpiresAt as String?,
+  ...
+);
+```
+Callers omitting the parameter get the existing value (sentinel path). Callers passing `null` explicitly clear it. Tests cover both cases.
+
+---
+
+## 27. Daily Reward Popup Appearing Multiple Times Per Day
+
+**Symptom (hypothetical, prevented by design):** If the reward claim failed to persist before the dialog closed, the popup would reappear on the next home screen build during the same session.
+
+**Prevention:** `claimDailyReward()` sets `dailyRewardClaimedDate = today` in **both** Riverpod state and SharedPreferences synchronously before the dialog is dismissed. Since the popup trigger (`pendingReward != null`) checks `dailyRewardClaimedDate == today`, a claimed reward can never trigger the popup again the same day — even if the app is force-killed and reopened.
+
+`claimDailyReward()` is also fully idempotent: if called twice (e.g., double-tap on Claim button), the second call returns immediately because `pendingReward` is already null after the first call updates `dailyRewardClaimedDate`.
+
+---
+
 ## Architecture: Monolith → 3 Microservices
 
 The project initially shipped as a single Go binary. The spec required three independent services. The split was:

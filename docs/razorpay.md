@@ -105,6 +105,30 @@ The checkout shows UPI first, then card/netbanking/wallet:
 - **Payment failed** (any other code): shows a dialog with the error message, error code, and a **"Try Again"** button that reopens the same order without creating a new one
 - **Verification failed** (server rejects HMAC): shows a SnackBar — the Razorpay payment went through but our backend rejected it (shouldn't happen in practice)
 
+## Premium vs Premium Trial
+
+The app has two separate "premium" paths:
+
+| Source | Field | Duration | How activated |
+|--------|-------|----------|---------------|
+| Razorpay payment | `isPremium = true` | 30 or 365 days (server-tracked) | `POST /payment/verify` → payment service writes `expiresAt` to MongoDB |
+| Day-30 login streak reward | `premiumTrialExpiresAt` | 7 days (client-tracked) | `claimDailyReward()` sets datetime in SharedPreferences |
+
+Both are checked via `isEffectivelyPremium`:
+```dart
+bool get isEffectivelyPremium {
+  if (isPremium) return true;
+  if (premiumTrialExpiresAt == null) return false;
+  return DateTime.tryParse(premiumTrialExpiresAt!)?.isAfter(DateTime.now()) ?? false;
+}
+```
+
+A user can stack both: a paid subscriber who also earned a trial will remain
+on paid premium after the trial expires. `_syncPremiumFromServer()` keeps the
+`isPremium` flag authoritative from the server; it never overrides a trial.
+
+---
+
 ## Testing
 
 Use Razorpay test credentials:

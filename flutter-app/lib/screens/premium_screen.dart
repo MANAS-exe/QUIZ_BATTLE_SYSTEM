@@ -62,6 +62,10 @@ class _PremiumScreenState extends ConsumerState<PremiumScreen> {
   late Razorpay _razorpay;
   bool _isLoading = false;
   Map<String, dynamic>? _lastOptions; // kept for retry after failure
+  final _couponCtrl = TextEditingController();
+  bool _couponApplied = false;
+  bool _couponLoading = false;
+  String? _couponError;
 
   @override
   void initState() {
@@ -75,6 +79,7 @@ class _PremiumScreenState extends ConsumerState<PremiumScreen> {
   @override
   void dispose() {
     _razorpay.clear();
+    _couponCtrl.dispose();
     super.dispose();
   }
 
@@ -262,7 +267,11 @@ class _PremiumScreenState extends ConsumerState<PremiumScreen> {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${auth.token}',
         },
-        body: jsonEncode({'plan': plan}),
+        body: jsonEncode({
+          'plan': plan,
+          if (_couponApplied && _couponCtrl.text.trim().isNotEmpty)
+            'coupon_code': _couponCtrl.text.trim().toUpperCase(),
+        }),
       );
 
       final body = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -380,9 +389,51 @@ class _PremiumScreenState extends ConsumerState<PremiumScreen> {
 
                 // Plan buttons — only show if not already premium
                 if (!auth.isPremium) ...[
+                  // Coupon code section
+                  _CouponSection(
+                    controller: _couponCtrl,
+                    applied: _couponApplied,
+                    loading: _couponLoading,
+                    error: _couponError,
+                    onApply: () async {
+                      final code = _couponCtrl.text.trim().toUpperCase();
+                      if (code.isEmpty) {
+                        setState(() => _couponError = "Enter a friend's referral code");
+                        return;
+                      }
+                      setState(() { _couponLoading = true; _couponError = null; });
+                      try {
+                        final token = ref.read(authProvider).token;
+                        final resp = await http.get(
+                          Uri.parse('$_baseUrl/payment/validate-coupon?code=$code'),
+                          headers: {'Authorization': 'Bearer $token'},
+                        );
+                        final body = jsonDecode(resp.body) as Map<String, dynamic>;
+                        if (!mounted) return;
+                        setState(() {
+                          _couponLoading = false;
+                          _couponApplied = body['valid'] == true;
+                          _couponError = body['valid'] == true ? null : body['message'] as String?;
+                        });
+                      } catch (_) {
+                        if (!mounted) return;
+                        setState(() {
+                          _couponLoading = false;
+                          _couponError = 'Could not validate code. Check your connection.';
+                        });
+                      }
+                    },
+                    onRemove: () => setState(() {
+                      _couponApplied = false;
+                      _couponError = null;
+                      _couponCtrl.clear();
+                    }),
+                  ),
+                  const SizedBox(height: 16),
                   _PlanButton(
                     label: 'Monthly Plan',
-                    price: '₹499',
+                    price: _couponApplied ? '₹399' : '₹499',
+                    originalPrice: _couponApplied ? '₹499' : null,
                     period: '/month',
                     highlight: false,
                     onTap: _isLoading ? null : () => _startPayment('monthly'),
@@ -390,9 +441,12 @@ class _PremiumScreenState extends ConsumerState<PremiumScreen> {
                   const SizedBox(height: 14),
                   _PlanButton(
                     label: 'Yearly Plan',
-                    price: '₹3,999',
+                    price: _couponApplied ? '₹3,499' : '₹3,999',
+                    originalPrice: _couponApplied ? '₹3,999' : null,
                     period: '/year',
-                    subtitle: 'Save ₹2,000 vs monthly',
+                    subtitle: _couponApplied
+                        ? 'Save ₹2,500 vs monthly'
+                        : 'Save ₹2,000 vs monthly',
                     highlight: true,
                     onTap: _isLoading ? null : () => _startPayment('yearly'),
                   ),
@@ -642,12 +696,157 @@ class _FeatureComparisonTable extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Coupon Section
+// ─────────────────────────────────────────────────────────────
+
+class _CouponSection extends StatelessWidget {
+  final TextEditingController controller;
+  final bool applied;
+  final bool loading;
+  final String? error;
+  final VoidCallback onApply;
+  final VoidCallback onRemove;
+
+  const _CouponSection({
+    required this.controller,
+    required this.applied,
+    required this.loading,
+    required this.error,
+    required this.onApply,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+
+        // Applied success state
+        if (applied)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2ECC71).withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: const Color(0xFF2ECC71).withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.check_circle_rounded,
+                    color: Color(0xFF2ECC71), size: 18),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'Coupon applied! Save ₹100 on Monthly · ₹500 on Yearly',
+                    style: TextStyle(
+                        color: Color(0xFF2ECC71),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: onRemove,
+                  child: const Icon(Icons.close_rounded,
+                      color: Color(0xFF2ECC71), size: 18),
+                ),
+              ],
+            ),
+          )
+        else ...[
+          // Input row
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  textCapitalization: TextCapitalization.characters,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      letterSpacing: 1.5,
+                      fontWeight: FontWeight.w600),
+                  decoration: InputDecoration(
+                    hintText: "Got a referral? Enter code",
+                    hintStyle: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.25),
+                        fontSize: 13,
+                        letterSpacing: 0,
+                        fontWeight: FontWeight.w400),
+                    prefixIcon: Icon(Icons.local_offer_rounded,
+                        color: Colors.white38, size: 18),
+                    filled: true,
+                    fillColor: const Color(0xFF1A1A2E),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 14),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.1)),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                          color: error != null
+                              ? Colors.redAccent.withValues(alpha: 0.6)
+                              : Colors.white.withValues(alpha: 0.1)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide:
+                          BorderSide(color: appGold.withValues(alpha: 0.7)),
+                    ),
+                  ),
+                  onSubmitted: (_) => onApply(),
+                ),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton(
+                onPressed: loading ? null : onApply,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: appGold,
+                  disabledBackgroundColor: appGold.withValues(alpha: 0.5),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 18, vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  elevation: 0,
+                ),
+                child: loading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            color: Colors.black54, strokeWidth: 2),
+                      )
+                    : const Text('Apply',
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 6),
+            Text(error!,
+                style: const TextStyle(
+                    color: Colors.redAccent, fontSize: 12)),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Plan Button
 // ─────────────────────────────────────────────────────────────
 
 class _PlanButton extends StatelessWidget {
   final String label;
   final String price;
+  final String? originalPrice; // non-null when a discount is active
   final String period;
   final String? subtitle;
   final bool highlight;
@@ -656,6 +855,7 @@ class _PlanButton extends StatelessWidget {
   const _PlanButton({
     required this.label,
     required this.price,
+    this.originalPrice,
     required this.period,
     this.subtitle,
     required this.highlight,
@@ -728,26 +928,42 @@ class _PlanButton extends StatelessWidget {
                 ],
               ),
             ),
-            RichText(
-              text: TextSpan(
-                children: [
-                  TextSpan(
-                    text: price,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (originalPrice != null)
+                  Text(
+                    originalPrice!,
                     style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color: highlight ? Colors.black : Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: highlight ? Colors.black38 : Colors.white30,
+                      decoration: TextDecoration.lineThrough,
+                      decorationColor: highlight ? Colors.black38 : Colors.white30,
                     ),
                   ),
-                  TextSpan(
-                    text: period,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: highlight ? Colors.black54 : Colors.white38,
-                    ),
+                RichText(
+                  text: TextSpan(
+                    children: [
+                      TextSpan(
+                        text: price,
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: highlight ? Colors.black : Colors.white,
+                        ),
+                      ),
+                      TextSpan(
+                        text: period,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: highlight ? Colors.black54 : Colors.white38,
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ],
         ),

@@ -4,6 +4,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+
 import '../services/auth_service.dart' show AuthState, AuthNotifier, DailyReward, authProvider, kFreeQuotaPerDay;
 import '../theme/colors.dart';
 import 'global_leaderboard_screen.dart' show globalLeaderboardProvider;
@@ -103,6 +105,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ],
                       _StreakCard(auth: auth),
                       const SizedBox(height: 20),
+                      if (auth.referralCode != null) ...[
+                        _ReferralShareCard(auth: auth),
+                        const SizedBox(height: 20),
+                      ],
                       _LeaderboardPreview(auth: auth),
                       const SizedBox(height: 32),
                     ],
@@ -166,6 +172,31 @@ class _TopBar extends StatelessWidget {
             ],
           ),
         ),
+        // Coin capsule — always shown when logged in
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: appGold.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: appGold.withValues(alpha: 0.4)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.monetization_on_rounded, color: appGold, size: 16),
+              const SizedBox(width: 4),
+              Text(
+                '${auth.coins}',
+                style: TextStyle(
+                  color: appGold,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
         // Login streak pill — shown when streak > 0
         if (auth.currentStreak > 0) ...[
           Container(
@@ -1645,6 +1676,120 @@ class _DailyRewardDialog extends ConsumerWidget {
           curve: Curves.easeOutBack,
           duration: 400.ms,
         );
+  }
+}
+
+// ─────────────────────────────────────────
+// REFERRAL SHARE CARD
+// ─────────────────────────────────────────
+//
+// Compact card shown below the streak card when the user has a referral code.
+// Tapping opens the Profile → REFERRAL tab for full details and sharing.
+// Shows the code with a one-tap copy button — zero friction to share.
+
+class _ReferralShareCard extends ConsumerWidget {
+  final AuthState auth;
+  const _ReferralShareCard({required this.auth});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final code = auth.referralCode!;
+    return GestureDetector(
+      onTap: () => context.goNamed('profile'),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              appCoral.withValues(alpha: 0.14),
+              appCoral.withValues(alpha: 0.05),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: appCoral.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: appCoral.withValues(alpha: 0.14),
+              ),
+              child: const Icon(Icons.card_giftcard_rounded,
+                  color: appCoral, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Invite friends, earn coins',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Your code: $code',
+                    style: TextStyle(
+                      color: appCoral.withValues(alpha: 0.85),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Copy button
+            GestureDetector(
+              onTap: () async {
+                await Clipboard.setData(ClipboardData(text: code));
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Code $code copied!'),
+                    backgroundColor: appSurface,
+                    behavior: SnackBarBehavior.floating,
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              },
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: appCoral.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: appCoral.withValues(alpha: 0.4)),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.copy_rounded, color: appCoral, size: 14),
+                    SizedBox(width: 4),
+                    Text('Copy',
+                        style: TextStyle(
+                            color: appCoral,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ).animate().fadeIn(delay: 200.ms, duration: 350.ms).slideY(
+        begin: 0.1, end: 0, delay: 200.ms, duration: 350.ms);
   }
 }
 

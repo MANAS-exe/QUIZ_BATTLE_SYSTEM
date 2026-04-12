@@ -86,6 +86,7 @@ func main() {
 
 	googleAuthHandler := handlers.NewGoogleAuthHandler(mongoDB)
 	leaderboardHandler := handlers.NewLeaderboardHTTPHandler(mongoDB)
+	referralHandler := handlers.NewReferralHandler(mongoDB)
 
 	mux := http.NewServeMux()
 	mux.Handle("/leaderboard", leaderboardHandler)
@@ -99,6 +100,62 @@ func main() {
 			return
 		}
 		googleAuthHandler.ServeHTTP(w, r)
+	})
+
+	// ── Referral endpoints ────────────────────────────────────────
+	// All require JWT authentication (Authorization: Bearer <token>).
+	// OPTIONS preflight is handled inline for Flutter Web compatibility.
+	mux.HandleFunc("/referral/code", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		referralHandler.GetCode(w, r)
+	})
+	mux.HandleFunc("/referral/apply", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		referralHandler.ApplyCode(w, r)
+	})
+	mux.HandleFunc("/referral/claim", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		referralHandler.ClaimRewards(w, r)
+	})
+	mux.HandleFunc("/referral/history", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		referralHandler.History(w, r)
 	})
 
 	go func() {

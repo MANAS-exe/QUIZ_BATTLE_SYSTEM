@@ -145,7 +145,8 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Parse request body
 	var body struct {
-		Plan string `json:"plan"` // "monthly" | "yearly"
+		Plan       string `json:"plan"`        // "monthly" | "yearly"
+		CouponCode string `json:"coupon_code"` // optional referral discount code
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -186,6 +187,40 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		amount = 399900 // ₹3999
 	}
 
+	originalAmount := amount
+	discountApplied := false
+
+	// Optional referral coupon — buyer enters a friend's referral code to get a discount.
+	// Valid if: the code exists in the users collection AND does not belong to the buyer.
+	if body.CouponCode != "" {
+		couponCode := strings.ToUpper(strings.TrimSpace(body.CouponCode))
+		usersColl := h.db.Collection("users")
+		var codeOwner struct {
+			ID primitive.ObjectID `bson:"_id"`
+		}
+		err := usersColl.FindOne(ctx,
+			bson.M{"referral_code": couponCode},
+			options.FindOne().SetProjection(bson.M{"_id": 1}),
+		).Decode(&codeOwner)
+		if err == nil && codeOwner.ID.Hex() != userID {
+			// Code belongs to someone else — valid discount
+			discountApplied = true
+			switch body.Plan {
+			case "monthly":
+				amount = 39900 // ₹399 (₹100 off)
+			case "yearly":
+				amount = 349900 // ₹3499 (₹500 off)
+			}
+		} else if err == nil && codeOwner.ID.Hex() == userID {
+			// Self-referral — reject
+			writeError(w, http.StatusBadRequest, "you cannot use your own referral code")
+			return
+		} else if err != mongo.ErrNoDocuments {
+			log.Printf("CreateOrder: coupon lookup error for code %s: %v", couponCode, err)
+		}
+		// If code not found (ErrNoDocuments), silently ignore — no discount applied
+	}
+
 	// 5. Generate a receipt ID
 	receipt := fmt.Sprintf("rcpt_%s_%d", userID[:8], time.Now().UnixMilli())
 
@@ -217,14 +252,16 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	// 8. Return order details to Flutter
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":  true,
-		"order_id": rzpOrder.ID,
-		"amount":   rzpOrder.Amount,
-		"currency": rzpOrder.Currency,
-		"key_id":   h.cfg.RazorpayKeyID,
-		"user_id":  userID,
-		"username": username,
-		"plan":     body.Plan,
+		"success":          true,
+		"order_id":         rzpOrder.ID,
+		"amount":           rzpOrder.Amount,
+		"currency":         rzpOrder.Currency,
+		"key_id":           h.cfg.RazorpayKeyID,
+		"user_id":          userID,
+		"username":         username,
+		"plan":             body.Plan,
+		"discount_applied": discountApplied,
+		"original_amount":  originalAmount,
 	})
 }
 
@@ -270,6 +307,74 @@ func (h *PaymentHandler) createRazorpayOrder(amount int64, receipt string) (*raz
 }
 
 // ─────────────────────────────────────────────────────────────
+// GET /payment/validate-coupon?code=XXXXXX
+// Checks whether a referral code is valid for the requesting user without
+// creating an order. Returns { valid, message }.
+// ─────────────────────────────────────────────────────────────
+
+func (h *PaymentHandler) ValidateCoupon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	tokenStr, err := extractBearerToken(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	userID, _, err := auth.ValidateToken(tokenStr)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid token")
+		return
+	}
+
+	code := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("code")))
+	if len(code) != 6 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"valid":   false,
+			"message": "Referral code must be exactly 6 characters",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	usersColl := h.db.Collection("users")
+	var codeOwner struct {
+		ID primitive.ObjectID `bson:"_id"`
+	}
+	err = usersColl.FindOne(ctx,
+		bson.M{"referral_code": code},
+		options.FindOne().SetProjection(bson.M{"_id": 1}),
+	).Decode(&codeOwner)
+
+	if err == mongo.ErrNoDocuments {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"valid":   false,
+			"message": "Referral code not found",
+		})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if codeOwner.ID.Hex() == userID {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"valid":   false,
+			"message": "You can't use your own referral code",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"valid":   true,
+		"message": "Referral code applied! Save ₹100 on Monthly · ₹500 on Yearly",
+	})
+}
+
 // ─────────────────────────────────────────────────────────────
 // POST /payment/verify
 // Called by Flutter after Razorpay checkout succeeds.

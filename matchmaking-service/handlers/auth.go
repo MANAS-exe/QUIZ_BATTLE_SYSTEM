@@ -18,12 +18,17 @@ import (
 )
 
 // User document stored in MongoDB.
+// ReferralCode is generated at registration so the user can immediately share
+// their invite link. The other referral fields (referred_by, referral_count,
+// pending_referral_coins, etc.) default to zero/empty and are managed by
+// handlers/referral.go.
 type User struct {
 	ID           primitive.ObjectID `bson:"_id,omitempty"`
 	Username     string             `bson:"username"`
 	PasswordHash string             `bson:"password_hash"`
 	Rating       int                `bson:"rating"`
 	CreatedAt    time.Time          `bson:"created_at"`
+	ReferralCode string             `bson:"referral_code"`
 }
 
 // AuthHandler implements quiz.AuthServiceServer.
@@ -73,11 +78,21 @@ func (h *AuthHandler) Register(ctx context.Context, req *quiz.AuthRequest) (*qui
 		return nil, status.Errorf(codes.Internal, "hash password: %v", err)
 	}
 
+	// Generate a referral code for the new user so they can share their invite
+	// link immediately after registration. Non-fatal: if generation fails, the
+	// code stays empty and will be lazily generated on the first GET /referral/code.
+	referralCode, codeErr := generateUniqueCode(ctx, h.users)
+	if codeErr != nil {
+		log.Printf("⚠️  register: failed to generate referral code for %s: %v", req.Username, codeErr)
+		referralCode = ""
+	}
+
 	user := User{
 		Username:     req.Username,
 		PasswordHash: string(hash),
 		Rating:       1000,
 		CreatedAt:    time.Now(),
+		ReferralCode: referralCode,
 	}
 
 	result, err := h.users.InsertOne(ctx, user)
