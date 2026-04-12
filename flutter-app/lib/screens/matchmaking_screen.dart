@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,13 +9,14 @@ import '../models/game_event.dart';
 import '../providers/game_provider.dart';
 import '../services/auth_service.dart';
 import '../services/game_service.dart';
+import '../theme/colors.dart';
 
 // ─────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────
 
-const _coral = Color(0xFFC96442);
-const _bg = Color(0xFF0D0D1A);
+const _coral   = appCoral;
+const _bg      = appBg;
 const _matchmakingTimeout = 20; // seconds — gives server lobbyWait (10s) + buffer
 
 // ─────────────────────────────────────────
@@ -137,6 +139,7 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
   void _onMatchFound(MatchmakingUpdate update) {
     _countdownTimer?.cancel();
     final auth = ref.read(authProvider);
+    ref.read(authProvider.notifier).consumeDailyQuiz();
     ref.read(gameProvider.notifier).setUser(_userId, auth.username ?? 'You');
     ref.read(gameProvider.notifier).onMatchFound(
       roomId: update.roomId!,
@@ -210,161 +213,234 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
     );
   }
 
+  String _levelLabel(int rating) {
+    if (rating >= 250000) return 'GRANDMASTER';
+    if (rating >= 200000) return 'MASTER';
+    if (rating >= 150000) return 'EXPERT';
+    if (rating >= 100000) return 'ADVANCED';
+    if (rating >= 50000)  return 'INTERMEDIATE';
+    return 'BEGINNER';
+  }
+
   // ── Lobby (pre-matchmaking) ───────────────────────────────
 
   Widget _buildLobby() {
     final auth = ref.watch(authProvider);
     final username = auth.username ?? _userId;
+    final initial = username.isNotEmpty ? username[0].toUpperCase() : '?';
+    final winRate = auth.matchesPlayed > 0
+        ? (auth.matchesWon / auth.matchesPlayed * 100).round()
+        : 0;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
         children: [
-          const SizedBox(height: 24),
-
-          // ── Player profile card ──
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1A1A2E),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _coral.withValues(alpha: 0.25)),
-            ),
-            child: Column(
-              children: [
-                // Avatar + name
-                Container(
-                  width: 70,
-                  height: 70,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _coral.withValues(alpha: 0.2),
-                    border: Border.all(color: _coral, width: 2.5),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    username.isNotEmpty ? username[0].toUpperCase() : '?',
-                    style: const TextStyle(
-                      color: _coral,
-                      fontSize: 28,
-                      fontWeight: FontWeight.w800,
-                    ),
+          // ── Profile banner (like reference) ───────────────────
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              // Banner background
+              Container(
+                height: 160,
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF2B1208), Color(0xFF1A0B06), Color(0xFF0D0D1A)],
                   ),
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  username,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // Stats row
-                // Stats row 1
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                child: Stack(
                   children: [
-                    _buildStatItem(
-                      Icons.star_rounded,
-                      const Color(0xFFFFB830),
-                      '${auth.rating}',
-                      'Rating',
+                    // Decorative circle top-right
+                    Positioned(
+                      top: -30, right: -30,
+                      child: Container(
+                        width: 160, height: 160,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _coral.withValues(alpha: 0.08),
+                        ),
+                      ),
                     ),
-                    _buildStatItem(
-                      Icons.sports_esports_rounded,
-                      _coral,
-                      '${auth.matchesPlayed}',
-                      'Played',
-                    ),
-                    _buildStatItem(
-                      Icons.emoji_events_rounded,
-                      const Color(0xFF2ECC71),
-                      '${auth.matchesWon}',
-                      'Won',
+                    Positioned(
+                      bottom: -20, left: 20,
+                      child: Container(
+                        width: 90, height: 90,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _coral.withValues(alpha: 0.05),
+                        ),
+                      ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 14),
-                // Stats row 2
+              ),
+
+              // Avatar — overlapping the banner bottom edge
+              Positioned(
+                bottom: -44,
+                left: 24,
+                child: _buildLobbyAvatar(auth.pictureUrl, initial)
+                    .animate()
+                    .scale(
+                        begin: const Offset(0.7, 0.7),
+                        end: const Offset(1, 1),
+                        curve: Curves.elasticOut,
+                        duration: 700.ms),
+              ),
+
+              // View profile button top-right of banner
+              Positioned(
+                top: 12, right: 16,
+                child: GestureDetector(
+                  onTap: () => context.pushNamed('profile'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black38,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.person_rounded, color: Colors.white70, size: 14),
+                        SizedBox(width: 5),
+                        Text('View Profile',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            )),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ).animate().fadeIn(duration: 400.ms),
+
+          // ── Name + info row (below banner) ─────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 54, 24, 0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Name + online dot
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    _buildStatItem(
-                      Icons.local_fire_department_rounded,
-                      const Color(0xFFE74C3C),
-                      '${auth.currentStreak}',
-                      'Daily Streak',
+                    Text(
+                      username,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                    _buildStatItem(
-                      Icons.whatshot_rounded,
-                      const Color(0xFFFFB830),
-                      '${auth.maxStreak}',
-                      'Max Streak',
+                    const SizedBox(width: 8),
+                    Container(
+                      width: 10, height: 10,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Color(0xFF2ECC71),
+                        boxShadow: [
+                          BoxShadow(color: Color(0x552ECC71), blurRadius: 6, spreadRadius: 1),
+                        ],
+                      ),
                     ),
-                    _buildStatItem(
-                      Icons.bolt_rounded,
-                      const Color(0xFFC96442),
-                      '${auth.maxQuestionStreak}',
-                      'Best Q Streak',
-                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                // Rating + win-rate chips
+                Wrap(
+                  spacing: 8, runSpacing: 6,
+                  children: [
+                    _Chip(icon: Icons.star_rounded, label: '${auth.rating}', color: const Color(0xFFFFB830)),
+                    _Chip(icon: Icons.military_tech_rounded, label: _levelLabel(auth.rating), color: const Color(0xFFFFB830)),
+                    if (auth.currentStreak > 0)
+                      _Chip(icon: Icons.local_fire_department_rounded, label: '${auth.currentStreak}d streak', color: const Color(0xFFE74C3C)),
                   ],
                 ),
               ],
-            ),
-          ).animate().fadeIn(duration: 400.ms).slideY(begin: -0.1, end: 0),
-
-          const SizedBox(height: 32),
-
-          // ── Ready text ──
-          const Text(
-            'Ready to battle?',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 24,
-              fontWeight: FontWeight.w700,
-            ),
+            ).animate().fadeIn(delay: 200.ms, duration: 400.ms),
           ),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 20),
 
-          Text(
-            'Find an opponent and test your knowledge',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.5),
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
+          // ── Stats grid (3 tabs style) ──────────────────────────
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A2E),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Column(
+                children: [
+                  // Top row
+                  IntrinsicHeight(
+                    child: Row(
+                      children: [
+                        _StatTile(icon: Icons.sports_esports_rounded, color: _coral,
+                            value: '${auth.matchesPlayed}', label: 'Played'),
+                        _VertDivider(),
+                        _StatTile(icon: Icons.emoji_events_rounded, color: const Color(0xFF2ECC71),
+                            value: '${auth.matchesWon}', label: 'Won'),
+                        _VertDivider(),
+                        _StatTile(icon: Icons.close_rounded, color: const Color(0xFFE74C3C),
+                            value: '${auth.matchesPlayed - auth.matchesWon}', label: 'Lost'),
+                      ],
+                    ),
+                  ),
+                  Divider(height: 1, color: Colors.white10),
+                  // Bottom row
+                  IntrinsicHeight(
+                    child: Row(
+                      children: [
+                        _StatTile(icon: Icons.whatshot_rounded, color: const Color(0xFFFFB830),
+                            value: '${auth.maxStreak}', label: 'Max Streak'),
+                        _VertDivider(),
+                        _StatTile(icon: Icons.bolt_rounded, color: _coral,
+                            value: '${auth.maxQuestionStreak}', label: 'Best Q Streak'),
+                        _VertDivider(),
+                        _StatTile(icon: Icons.bar_chart_rounded, color: const Color(0xFFFFB830),
+                            value: '$winRate%', label: 'Win Rate'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
+          ).animate().fadeIn(delay: 300.ms, duration: 400.ms).slideY(begin: 0.1, end: 0),
 
-          const SizedBox(height: 32),
+          const SizedBox(height: 24),
 
-          // ── Start button ──
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _onStartPressed,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _coral,
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
+          // ── Start button ──────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _onStartPressed,
+                icon: const Icon(Icons.sports_esports_rounded, size: 20),
+                label: const Text(
+                  'Start Matchmaking',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _coral,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  elevation: 0,
                 ),
               ),
-              child: const Text(
-                'Start Matchmaking',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                ),
-              ),
             ),
-          ).animate().fadeIn(delay: 200.ms, duration: 400.ms).slideY(begin: 0.2, end: 0),
+          ).animate().fadeIn(delay: 400.ms, duration: 400.ms).slideY(begin: 0.2, end: 0),
 
           const SizedBox(height: 32),
         ],
@@ -372,56 +448,92 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
     );
   }
 
-  Widget _buildStatItem(IconData icon, Color color, String value, String label) {
-    return Column(
-      children: [
-        Icon(icon, color: color, size: 22),
-        const SizedBox(height: 6),
-        Text(
-          value,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 18,
-            fontWeight: FontWeight.w800,
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          label,
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.4),
-            fontSize: 11,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
+  // ── Lobby avatar (Google photo or initial letter) ─────────
+
+  Widget _buildLobbyAvatar(String? pictureUrl, String initial) {
+    final outerDecoration = BoxDecoration(
+      shape: BoxShape.circle,
+      color: _coral.withValues(alpha: 0.18),
+      border: Border.all(color: _bg, width: 4),
+      boxShadow: [
+        BoxShadow(color: _coral.withValues(alpha: 0.4), blurRadius: 20, spreadRadius: 2),
       ],
     );
+
+    if (pictureUrl != null && pictureUrl.isNotEmpty) {
+      return Container(
+        width: 88, height: 88,
+        decoration: outerDecoration,
+        child: ClipOval(
+          child: CachedNetworkImage(
+            imageUrl: pictureUrl,
+            width: 88, height: 88,
+            fit: BoxFit.cover,
+            placeholder: (_, __) => _initialAvatar(initial),
+            errorWidget: (_, __, ___) => _initialAvatar(initial),
+          ),
+        ),
+      );
+    }
+    return Container(
+      width: 88, height: 88,
+      decoration: outerDecoration,
+      child: _initialAvatar(initial),
+    );
   }
+
+  Widget _initialAvatar(String initial) => Container(
+        width: 80, height: 80,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: _coral.withValues(alpha: 0.25),
+          border: Border.all(color: _coral, width: 2),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          initial,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 34,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+      );
 
   // ── Top bar ───────────────────────────────────────────────
 
   Widget _buildTopBar(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
+      padding: const EdgeInsets.fromLTRB(8, 14, 16, 0),
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.close, color: Colors.white54),
-            onPressed: _onCancel,
+            icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                color: Colors.white70, size: 20),
+            onPressed: () {
+              if (_searching) _onCancel();
+              context.goNamed('home');
+            },
           ),
-          const Expanded(
-            child: Text(
-              'Quiz Battle',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-              ),
+          const Text(
+            'Quiz Battle',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
             ),
           ),
-          // Spacer to balance the close button
-          const SizedBox(width: 48),
+          const Spacer(),
+          Container(
+            width: 36, height: 36,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF1A1A2E),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: const Icon(Icons.notifications_none_rounded,
+                color: Colors.white38, size: 18),
+          ),
         ],
       ),
     );
@@ -712,6 +824,78 @@ class _MatchmakingScreenState extends ConsumerState<MatchmakingScreen>
       ),
     );
   }
+}
+
+// ─────────────────────────────────────────
+// LOBBY HELPER WIDGETS
+// ─────────────────────────────────────────
+
+class _Chip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  const _Chip({required this.icon, required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 13),
+          const SizedBox(width: 5),
+          Text(label,
+              style: TextStyle(
+                  color: color, fontSize: 12, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String value;
+  final String label;
+  const _StatTile({required this.icon, required this.color, required this.value, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(height: 6),
+            Text(value,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800)),
+            const SizedBox(height: 3),
+            Text(label,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white38, fontSize: 10)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VertDivider extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) =>
+      Container(width: 1, color: Colors.white10);
 }
 
 // ─────────────────────────────────────────

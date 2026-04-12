@@ -357,6 +357,23 @@ func (h *QuizServiceHandler) StreamGameEvents(req *quiz.StreamRequest, stream gr
 
 	log.Printf("📺 Player %s subscribed to room %s game stream", req.UserId, roomID)
 
+	// Notify all OTHER subscribers that this player joined.
+	// Look up the player's username from the room:{id}:players hash.
+	username := h.lookupUsername(roomID, req.UserId)
+	room.broadcast(&quiz.GameEvent{
+		Event: &quiz.GameEvent_PlayerJoined{
+			PlayerJoined: &quiz.PlayerJoined{
+				Player: &quiz.Player{
+					UserId:   req.UserId,
+					Username: username,
+					Status:   quiz.PlayerStatus_CONNECTED,
+				},
+				RoundNumber: int32(room.totalRounds), // current rounds count
+				State:       quiz.MatchState_IN_PROGRESS,
+			},
+		},
+	})
+
 	// The first subscriber triggers the game loop (subsequent ones just receive)
 	room.startOnce.Do(func() {
 		go h.runGameLoop(roomID, room)
@@ -604,6 +621,12 @@ func (h *QuizServiceHandler) buildPlayerScores(roomID string) ([]*quiz.PlayerSco
 		return nil, err
 	}
 
+	// Fallback: if leaderboard is empty (e.g. all players forfeited before answering),
+	// load all players from the room's player registry with 0 score.
+	if len(entries) == 0 {
+		entries = h.loadPlayersAsZeroScores(roomID)
+	}
+
 	userIDs := make([]string, len(entries))
 	for i, e := range entries {
 		userIDs[i] = e.UserID
@@ -623,12 +646,58 @@ func (h *QuizServiceHandler) buildPlayerScores(roomID string) ([]*quiz.PlayerSco
 			UserId:         e.UserID,
 			Username:       usernames[e.UserID],
 			Score:          int32(e.Score),
-			Rank:           int32(e.Rank),
+			Rank:           int32(i + 1),
 			AnswersCorrect: int32(correctCounts[e.UserID]),
 			AvgResponseMs:  int32(avgResponseMs[e.UserID]),
 		}
 	}
 	return scores, nil
+}
+
+// lookupUsername fetches a single player's username from room:{id}:players.
+// Returns an empty string if the lookup fails (non-fatal).
+func (h *QuizServiceHandler) lookupUsername(roomID, userID string) string {
+	conn := h.redisPool.Get()
+	defer conn.Close()
+	raw, err := goredis.Bytes(conn.Do("HGET", fmt.Sprintf("room:%s:players", roomID), userID))
+	if err != nil {
+		return ""
+	}
+	var p struct {
+		Username string `json:"username"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return ""
+	}
+	return p.Username
+}
+
+// loadPlayersAsZeroScores reads room:{id}:players and returns every player
+// with 0 score — used when the leaderboard is empty (all forfeited).
+func (h *QuizServiceHandler) loadPlayersAsZeroScores(roomID string) []rdb.LeaderboardEntry {
+	conn := h.redisPool.Get()
+	defer conn.Close()
+
+	playersKey := fmt.Sprintf("room:%s:players", roomID)
+	raw, err := goredis.StringMap(conn.Do("HGETALL", playersKey))
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+
+	entries := make([]rdb.LeaderboardEntry, 0, len(raw))
+	for userID, jsonStr := range raw {
+		var p struct {
+			Username string `json:"username"`
+		}
+		if jsonErr := json.Unmarshal([]byte(jsonStr), &p); jsonErr == nil {
+			entries = append(entries, rdb.LeaderboardEntry{
+				UserID: userID,
+				Score:  0,
+				Rank:   0, // filled in by caller
+			})
+		}
+	}
+	return entries
 }
 
 func (h *QuizServiceHandler) buildLeaderboardEvent(roomID string, roundNum int) (*quiz.GameEvent, error) {
@@ -757,27 +826,44 @@ func (h *QuizServiceHandler) clearMatchHistory(matchEndEvent *quiz.GameEvent) {
 
 func (h *QuizServiceHandler) saveMatchHistory(matchEndEvent *quiz.GameEvent, questionIDs []string) {
 	me := matchEndEvent.GetMatchEnd()
-	if me == nil || len(questionIDs) == 0 {
+	if me == nil {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Build players array matching the schema fetchSeenQuestionIDs expects
-	type playerRef struct {
-		UserID string `bson:"userId"`
+	// Full player stats — pulled directly from the MatchEnd proto which already
+	// has username, score, rank, answersCorrect, avgResponseMs populated by
+	// buildMatchEndEvent → buildPlayerScores → GetPlayerMeta.
+	type playerEntry struct {
+		UserID        string `bson:"userId"`
+		Username      string `bson:"username"`
+		FinalScore    int32  `bson:"finalScore"`
+		Rank          int32  `bson:"rank"`
+		AnswersCorrect int32 `bson:"answersCorrect"`
+		AvgResponseMs int32  `bson:"avgResponseTimeMs"`
 	}
-	players := make([]playerRef, len(me.FinalScores))
+	players := make([]playerEntry, len(me.FinalScores))
 	for i, ps := range me.FinalScores {
-		players[i] = playerRef{UserID: ps.UserId}
+		players[i] = playerEntry{
+			UserID:         ps.UserId,
+			Username:       ps.Username,
+			FinalScore:     ps.Score,
+			Rank:           ps.Rank,
+			AnswersCorrect: ps.AnswersCorrect,
+			AvgResponseMs:  ps.AvgResponseMs,
+		}
 	}
 
 	doc := bson.M{
+		"roomId":      me.RoomId,
 		"players":     players,
 		"questionIds": questionIDs,
-		"roomId":      me.RoomId,
+		"rounds":      me.TotalRounds,
+		"winner":      me.WinnerUserId,
 		"createdAt":   time.Now(),
+		"durationMs":  int64(me.DurationSeconds) * 1000,
 	}
 
 	_, err := h.mongoDB.Collection("match_history").InsertOne(ctx, doc)
@@ -785,5 +871,6 @@ func (h *QuizServiceHandler) saveMatchHistory(matchEndEvent *quiz.GameEvent, que
 		log.Printf("⚠️  saveMatchHistory: %v", err)
 		return
 	}
-	log.Printf("📝 Match history saved — %d questions for %d players", len(questionIDs), len(players))
+	log.Printf("📝 Match history saved — room: %s, winner: %s, %d rounds, %d players",
+		me.RoomId, me.WinnerUserId, me.TotalRounds, len(players))
 }

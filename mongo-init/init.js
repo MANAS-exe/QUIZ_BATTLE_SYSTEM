@@ -262,11 +262,137 @@ db.questions.insertMany([
     difficulty: "hard",
     topic: "sentence-structure",
     avgResponseTimeMs: 18000
+  },
+
+  // ── EASY — Vocabulary (q_021–q_024) ─────────────────────────
+  {
+    question_id: "q_021",
+    text: "Which word means the opposite of 'Ancient'?",
+    options: ["Old", "Modern", "Historical", "Classic"],
+    correctIndex: 1,
+    difficulty: "easy",
+    topic: "vocabulary",
+    avgResponseTimeMs: 7000
+  },
+  {
+    question_id: "q_022",
+    text: "What does 'Frequently' mean?",
+    options: ["Rarely", "Never", "Often", "Sometimes"],
+    correctIndex: 2,
+    difficulty: "easy",
+    topic: "vocabulary",
+    avgResponseTimeMs: 7500
+  },
+  {
+    question_id: "q_023",
+    text: "Which sentence is grammatically correct?",
+    options: [
+      "He go to school every day.",
+      "He goes to school every day.",
+      "He going to school every day.",
+      "He gone to school every day."
+    ],
+    correctIndex: 1,
+    difficulty: "easy",
+    topic: "grammar",
+    avgResponseTimeMs: 8000
+  },
+  {
+    question_id: "q_024",
+    text: "Which word is an ADJECTIVE?",
+    options: ["Run", "Slowly", "Beautiful", "Sing"],
+    correctIndex: 2,
+    difficulty: "easy",
+    topic: "parts-of-speech",
+    avgResponseTimeMs: 7000
+  },
+
+  // ── MEDIUM — Grammar & Idioms (q_025–q_027) ─────────────────
+  {
+    question_id: "q_025",
+    text: "What does the idiom 'spill the beans' mean?",
+    options: [
+      "To make a mess while cooking",
+      "To reveal a secret",
+      "To waste food",
+      "To be careless"
+    ],
+    correctIndex: 1,
+    difficulty: "medium",
+    topic: "idioms",
+    avgResponseTimeMs: 13000
+  },
+  {
+    question_id: "q_026",
+    text: "Choose the correct sentence:",
+    options: [
+      "If I would have time, I will help you.",
+      "If I have time, I will help you.",
+      "If I have time, I would helped you.",
+      "If I had time, I will help you."
+    ],
+    correctIndex: 1,
+    difficulty: "medium",
+    topic: "grammar",
+    avgResponseTimeMs: 14000
+  },
+  {
+    question_id: "q_027",
+    text: "Which word best fills the blank: 'The report was ___ because it lacked evidence.'",
+    options: ["convincing", "compelling", "inconclusive", "definitive"],
+    correctIndex: 2,
+    difficulty: "medium",
+    topic: "vocabulary",
+    avgResponseTimeMs: 15000
+  },
+
+  // ── HARD — Advanced (q_028–q_030) ────────────────────────────
+  {
+    question_id: "q_028",
+    text: "Which sentence contains a split infinitive?",
+    options: [
+      "She decided to leave early.",
+      "She wanted to boldly go where no one had gone.",
+      "She asked him to stay.",
+      "She tried leaving early."
+    ],
+    correctIndex: 1,
+    difficulty: "hard",
+    topic: "grammar",
+    avgResponseTimeMs: 22000
+  },
+  {
+    question_id: "q_029",
+    text: "What does 'equivocate' mean?",
+    options: [
+      "To speak clearly and directly",
+      "To use vague language to avoid commitment",
+      "To translate between languages",
+      "To repeat oneself unnecessarily"
+    ],
+    correctIndex: 1,
+    difficulty: "hard",
+    topic: "vocabulary",
+    avgResponseTimeMs: 22000
+  },
+  {
+    question_id: "q_030",
+    text: "Which is the correct use of a semicolon?",
+    options: [
+      "I love reading; books.",
+      "She was tired; however, she kept working.",
+      "He runs; fast.",
+      "They ate; and drank."
+    ],
+    correctIndex: 1,
+    difficulty: "hard",
+    topic: "punctuation",
+    avgResponseTimeMs: 20000
   }
 
 ]);
 
-print("✓ 20 SpeakX-style English questions inserted");
+print("✓ 30 SpeakX-style English questions inserted");
 
 // ── Create indexes ──────────────────────────────────────────
 db.users.createIndex({ username: 1 }, { unique: true });

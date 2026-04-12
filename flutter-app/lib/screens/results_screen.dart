@@ -7,19 +7,20 @@ import 'package:go_router/go_router.dart';
 import '../models/game_event.dart';
 import '../providers/game_provider.dart';
 import '../services/auth_service.dart';
+import '../theme/colors.dart';
 
 // ─────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────
 
-const _coral = Color(0xFFC96442);
-const _bg = Color(0xFF0D0D1A);
-const _surface = Color(0xFF1A1A2E);
-const _gold = Color(0xFFFFB830);
-const _silver = Color(0xFFB0BEC5);
-const _bronze = Color(0xFFCD7F32);
-const _green = Color(0xFF2ECC71);
-const _red = Color(0xFFE74C3C);
+const _coral   = appCoral;
+const _bg      = appBg;
+const _surface = appSurface;
+const _gold    = appGold;
+const _silver  = appSilver;
+const _bronze  = appBronze;
+const _green   = appGreen;
+const _red     = appRed;
 
 // ─────────────────────────────────────────
 // XP CALCULATION
@@ -56,9 +57,19 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
         gs.leaderboard.where((s) => s.userId == gs.userId).firstOrNull;
     ref.read(authProvider.notifier).recordMatchResult(
           won: won,
-          newRating:
-              ref.read(authProvider).rating + (myScore?.score ?? 0),
+          newRating: ref.read(authProvider).rating + (myScore?.score ?? 0),
           matchMaxStreak: gs.maxAnswerStreak,
+          lastMatch: LastMatchData(
+            won: won,
+            rank: myScore?.rank ?? gs.leaderboard.length,
+            score: myScore?.score ?? 0,
+            answersCorrect: myScore?.answersCorrect ?? 0,
+            totalRounds: me.totalRounds,
+            avgResponseMs: myScore?.avgResponseMs ?? 0,
+            durationSeconds: me.durationSeconds,
+            maxStreak: gs.maxAnswerStreak,
+            winnerUsername: me.winnerUsername,
+          ),
         );
   }
 
@@ -488,7 +499,28 @@ class _ResultsScreenState extends ConsumerState<ResultsScreen> {
               onPressed: () => _shareResult(state, matchEnd, myScore),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
+          // Home button
+          Expanded(
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.home_rounded, size: 18),
+              label: const Text('Home'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+                textStyle: const TextStyle(
+                    fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              onPressed: () {
+                ref.read(gameProvider.notifier).reset();
+                context.goNamed('home');
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
           // Rematch button
           Expanded(
             flex: 2,

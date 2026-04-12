@@ -172,6 +172,71 @@ The timer loop checks both keys and advances when the higher count matches the a
 
 ---
 
+## 16. Daily Quota Not Decrementing After Game
+
+**Symptom:** The home screen showed "5 remaining" even after a player finished a game.
+
+**Root Cause:** `consumeDailyQuiz()` was defined in `AuthNotifier` but never called anywhere. There was a comment in `home_screen.dart` saying it would be called "later", but the call site was never added.
+
+**Fix (`matchmaking_screen.dart → _onMatchFound`):** Added `ref.read(authProvider.notifier).consumeDailyQuiz()` immediately when a match is confirmed. This fires before navigation to the quiz screen, updating `dailyQuizUsed` in both Riverpod state and SharedPreferences so the home screen reflects the correct count on return.
+
+---
+
+## 17. Questions Repeating Within a Single Match (Detailed Fix)
+
+**Symptom:** The same question appeared in the same match multiple times.
+
+**Root Cause (double):**
+1. MongoDB `$sample` is documented to re-visit documents when the requested size exceeds ~5% of the collection (random in-memory scan). With 30 questions and 10 per match, this was frequently triggered.
+2. Each difficulty bucket (`easy`, `medium`, `hard`) called `sampleQuestions` independently. The second and third buckets did not exclude IDs already selected by earlier buckets — so a question could be picked by both the easy bucket and the fallback pass.
+
+**Fix (`quiz-service/questions/selection.go`):**
+- Replaced `$sample` pipeline with `Find(_id projection) + Go Fisher-Yates shuffle` — fetches all eligible IDs into memory, shuffles with `math/rand/v2` (cryptographically seeded), returns first `n`. Guarantees strict uniqueness regardless of collection size.
+- Each bucket now passes `append(seenIDs, questionIDs...)` as exclusions so already-selected IDs from earlier buckets are excluded.
+- Fallback fill also passes the full selected list as exclusions.
+
+---
+
+## 18. Premium Status Not Reflected on New Device Login
+
+**Symptom:** A player with an active premium subscription logged in on a different device and saw the free plan UI (quota bar, upsell card).
+
+**Root Cause:** Premium flag was stored only in local SharedPreferences and never verified against the server on login. A fresh device had no local data so `isPremium` defaulted to `false`.
+
+**Fix (`auth_service.dart → _syncPremiumFromServer`):** After every login/register/Google sign-in, the client calls `GET /payment/status` with the JWT and syncs the `is_active` field from the server into local SharedPreferences and Riverpod state. A 5-second timeout prevents blocking the login flow if the payment service is unreachable.
+
+---
+
+## 19. Razorpay Activity Resume Race Condition (Flutter)
+
+**Symptom:** After a payment failure or cancellation on Android, the app crashed or showed a black screen. Sometimes the entire emulator process exited.
+
+**Root Cause:** Razorpay SDK callbacks (`onPaymentError`, `onPaymentSuccess`, `onExternalWallet`) fire during Android Activity's `onResume`. Flutter's widget tree is not yet fully restored at this point, so calling `setState`, `showDialog`, or `ScaffoldMessenger.of(context)` synchronously inside these callbacks caused `_CastError` / `setState called during build`.
+
+**Fix (`premium_screen.dart`):** Wrapped all three Razorpay callback bodies in `Future.delayed(Duration.zero, () { ... })` so the UI calls are deferred to the next event loop tick, after the Activity resume sequence completes.
+
+---
+
+## 20. Docker Build Failure — payment-service Go Version Mismatch
+
+**Symptom:** `docker compose build payment-service` failed: `golang.org/x/sync v0.20.0 requires go >= 1.25.0`.
+
+**Root Cause:** `payment-service/Dockerfile` used `golang:1.21-alpine` but `go.mod` declared `go 1.25.0` (required by a transitive dependency upgrade).
+
+**Fix:** Changed `FROM golang:1.21-alpine` → `FROM golang:1.25-alpine` in `payment-service/Dockerfile` to match all other service Dockerfiles.
+
+---
+
+## 21. Android Manifest Merge Conflict (Razorpay CheckoutActivity)
+
+**Symptom:** Flutter build failed: `Attribute application@android:exported value=(false) from AndroidManifest.xml conflicts with com.razorpay:checkout`.
+
+**Root Cause:** Razorpay SDK's `AndroidManifest.xml` declares `CheckoutActivity` with `android:exported="true"` and a specific theme. The app's manifest had conflicting values.
+
+**Fix (`flutter-app/android/app/src/main/AndroidManifest.xml`):** Added `xmlns:tools` namespace and `tools:replace="android:exported,android:theme"` on the `CheckoutActivity` entry, with `android:theme="@style/CheckoutTheme"` (the SDK's built-in theme name).
+
+---
+
 ## Architecture: Monolith → 3 Microservices
 
 The project initially shipped as a single Go binary. The spec required three independent services. The split was:

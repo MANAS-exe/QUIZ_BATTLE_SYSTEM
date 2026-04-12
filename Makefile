@@ -1,4 +1,4 @@
-.PHONY: proto infra up down test build clean seed run-matchmaking run-quiz run-scoring kill
+.PHONY: proto infra up down test build clean seed seed-users run-matchmaking run-quiz run-scoring run-payment kill
 
 # ── Proto generation ────────────────────────────────────────────
 proto:
@@ -30,13 +30,16 @@ build:
 
 # ── Run individual services (local dev) ─────────────────────────
 run-matchmaking:
-	cd matchmaking-service && go run .
+	cd matchmaking-service && export $$(cat .env | xargs) && go run .
 
 run-quiz:
 	cd quiz-service && go run .
 
 run-scoring:
 	cd scoring-service && go run .
+
+run-payment:
+	cd payment-service && export $$(cat .env | xargs) && go run .
 
 # ── Tests ───────────────────────────────────────────────────────
 test:
@@ -51,6 +54,11 @@ test-flutter:
 # ── Database ────────────────────────────────────────────────────
 seed:
 	docker exec -i quiz_mongodb mongosh quizdb < mongo-init/init.js
+
+# Seed 6 test users (alice/bob/charlie/diana/evan/fiona, password: speakx123)
+# Requires MongoDB to be running. Skips users that already exist.
+seed-users:
+	cd matchmaking-service && go run ./cmd/seed
 
 # ── Cleanup ─────────────────────────────────────────────────────
 clean:

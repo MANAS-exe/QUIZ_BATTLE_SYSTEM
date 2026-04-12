@@ -3,11 +3,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'providers/game_provider.dart';
+import 'screens/global_leaderboard_screen.dart';
+import 'screens/home_screen.dart';
 import 'screens/leaderboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/matchmaking_screen.dart';
+import 'screens/profile_screen.dart';
 import 'screens/quiz_screen.dart';
 import 'screens/results_screen.dart';
+import 'screens/premium_screen.dart';
 import 'screens/spectating_screen.dart';
 import 'services/auth_service.dart';
 import 'services/game_service.dart';
@@ -25,6 +29,11 @@ final _router = GoRouter(
       builder: (context, state) => const LoginScreen(),
     ),
     GoRoute(
+      path: '/home',
+      name: 'home',
+      builder: (context, state) => const HomeScreen(),
+    ),
+    GoRoute(
       path: '/matchmaking',
       name: 'matchmaking',
       builder: (context, state) => const MatchmakingScreen(),
@@ -40,6 +49,11 @@ final _router = GoRouter(
       builder: (context, state) => const LeaderboardScreen(),
     ),
     GoRoute(
+      path: '/global-leaderboard',
+      name: 'global-leaderboard',
+      builder: (context, state) => const GlobalLeaderboardScreen(),
+    ),
+    GoRoute(
       path: '/spectating',
       name: 'spectating',
       builder: (context, state) => const SpectatingScreen(),
@@ -48,6 +62,16 @@ final _router = GoRouter(
       path: '/results',
       name: 'results',
       builder: (context, state) => const ResultsScreen(),
+    ),
+    GoRoute(
+      path: '/profile',
+      name: 'profile',
+      builder: (context, state) => const ProfileScreen(),
+    ),
+    GoRoute(
+      path: '/premium',
+      name: 'premium',
+      builder: (context, state) => const PremiumScreen(),
     ),
   ],
 
@@ -61,9 +85,9 @@ final _router = GoRouter(
       return '/login';
     }
 
-    // Logged in — don't stay on login
+    // Logged in — don't stay on login; send to home
     if (auth.isLoggedIn && path == '/login') {
-      return '/matchmaking';
+      return '/home';
     }
 
     // Game routes require an active room
@@ -95,15 +119,24 @@ void main() {
 // ROOT APP
 // ─────────────────────────────────────────
 
-class QuizBattleApp extends ConsumerWidget {
+class QuizBattleApp extends ConsumerStatefulWidget {
   const QuizBattleApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // Initialize auth client with the shared gRPC channel
-    final channel = ref.watch(grpcChannelProvider);
-    ref.read(authProvider.notifier).init(channel);
+  ConsumerState<QuizBattleApp> createState() => _QuizBattleAppState();
+}
 
+class _QuizBattleAppState extends ConsumerState<QuizBattleApp> {
+  @override
+  void initState() {
+    super.initState();
+    // Initialize auth client once — never fires again on rebuilds.
+    final channel = ref.read(grpcChannelProvider);
+    ref.read(authProvider.notifier).init(channel);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return MaterialApp.router(
       title: 'Quiz Battle',
       debugShowCheckedModeBanner: false,

@@ -12,8 +12,17 @@ import 'auth_service.dart';
 // CHANNELS — one per service
 // ─────────────────────────────────────────
 
+// Android emulator routes 10.0.2.2 → host machine's localhost.
+// Physical device: replace with your machine's LAN IP (e.g. 192.168.x.x).
+const _backendHost = 'localhost'; // overridden below for Android
+
+String get _host {
+  if (defaultTargetPlatform == TargetPlatform.android) return '10.0.2.2';
+  return _backendHost;
+}
+
 ClientChannel _makeChannel(int port) => ClientChannel(
-  'localhost',
+  _host,
   port: port,
   options: const ChannelOptions(credentials: ChannelCredentials.insecure()),
 );

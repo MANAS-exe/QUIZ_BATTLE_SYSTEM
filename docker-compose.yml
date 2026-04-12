@@ -21,8 +21,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: quiz_redis
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -64,6 +67,7 @@ services:
       REDIS_ADDR: "redis:6379"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       MONGO_URI: "mongodb://mongodb:27017"
+      GOOGLE_CLIENT_ID: "719168042393-acjhshba35836lojheenogj9qrps76p3.apps.googleusercontent.com"
     depends_on:
       mongodb:  { condition: service_healthy }
       redis:    { condition: service_healthy }
@@ -106,6 +110,24 @@ services:
       rabbitmq: { condition: service_healthy }
     restart: unless-stopped
 
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    container_name: quiz_payment
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: ":8081"
+      MONGO_URI: "mongodb://mongodb:27017"
+      RAZORPAY_KEY_ID: "rzp_test_SceECQQiE4Heaf"
+      RAZORPAY_KEY_SECRET: "DOSsV7M9yanTk1JnEAeaQ3yN"
+    depends_on:
+      mongodb: { condition: service_healthy }
+    restart: unless-stopped
+
 volumes:
   mongo-data:
     name: mongo-data
+  redis-data:
+    name: redis-data

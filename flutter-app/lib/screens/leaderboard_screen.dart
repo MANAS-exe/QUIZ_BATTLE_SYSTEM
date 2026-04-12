@@ -5,19 +5,20 @@ import 'package:go_router/go_router.dart';
 
 import '../models/game_event.dart';
 import '../providers/game_provider.dart';
+import '../theme/colors.dart';
 
 // ─────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────
 
-const _coral = Color(0xFFC96442);
-const _bg = Color(0xFF0D0D1A);
-const _surface = Color(0xFF1A1A2E);
-const _gold = Color(0xFFFFB830);
-const _silver = Color(0xFFB0BEC5);
-const _bronze = Color(0xFFCD7F32);
-const _green = Color(0xFF2ECC71);
-const _red = Color(0xFFE74C3C);
+const _coral   = appCoral;
+const _bg      = appBg;
+const _surface = appSurface;
+const _gold    = appGold;
+const _silver  = appSilver;
+const _bronze  = appBronze;
+const _green   = appGreen;
+const _red     = appRed;
 
 // ─────────────────────────────────────────
 // SCREEN
@@ -58,17 +59,9 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(gameProvider);
 
-    // If we arrive and the phase is already finished (MatchEnd arrived
-    // before this screen mounted), navigate immediately.
-    if (state.phase == MatchPhase.finished) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (context.mounted) context.goNamed('results');
-      });
-    }
-
     // Navigate on phase change
-    ref.listen(matchPhaseProvider, (_, next) {
-      if (!context.mounted) return;
+    ref.listen(matchPhaseProvider, (prev, next) {
+      if (!context.mounted || prev == next) return;
       if (next == MatchPhase.inRound) context.goNamed('quiz');
       if (next == MatchPhase.finished) context.goNamed('results');
     });
@@ -109,6 +102,10 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
                     if (state.currentAnswerStreak >= 2) ...[
                       const SizedBox(height: 16),
                       _buildStreakBadge(state.currentAnswerStreak),
+                    ],
+                    if (state.currentWinStreak >= 2) ...[
+                      const SizedBox(height: 12),
+                      _buildWinStreakBadge(state.currentWinStreak),
                     ],
                   ],
                 ),
@@ -391,6 +388,77 @@ class _LeaderboardScreenState extends ConsumerState<LeaderboardScreen> {
         .animate()
         .fadeIn(duration: 400.ms)
         .slideY(begin: 0.15, end: 0, duration: 400.ms);
+  }
+
+  // ─── Win streak badge (fastest correct answers in a row) ──────
+
+  Widget _buildWinStreakBadge(int streak) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      width: double.infinity,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            _gold.withValues(alpha: 0.12),
+            const Color(0xFF00C9FF).withValues(alpha: 0.08),
+            _gold.withValues(alpha: 0.12),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _gold.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(
+              streak.clamp(0, 5),
+              (i) => Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Icon(
+                  Icons.bolt_rounded,
+                  color: Color.lerp(
+                    _gold,
+                    const Color(0xFF00C9FF),
+                    i / 5,
+                  ),
+                  size: 22,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '$streak',
+            style: const TextStyle(
+              color: _gold,
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          Text(
+            'Speed Win Streak',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Fastest correct answer $streak round${streak == 1 ? '' : 's'} in a row',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.3),
+              fontSize: 10,
+            ),
+          ),
+        ],
+      ),
+    )
+        .animate()
+        .fadeIn(delay: 100.ms, duration: 400.ms)
+        .slideY(begin: 0.15, end: 0, delay: 100.ms, duration: 400.ms);
   }
 
   // ─── "Next round starting…" hint ──────────────────────────

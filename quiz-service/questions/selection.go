@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"time"
 
 	goredis "github.com/gomodule/redigo/redis"
@@ -17,8 +18,18 @@ type MatchHistory struct {
 	RoundQuestions []string `bson:"questionIds"`
 }
 
-// SelectForRoom samples questions from MongoDB (avoiding previously seen ones)
-// and stores the ordered list in Redis under room:{id}:questions.
+// SelectForRoom picks unique questions from MongoDB and stores them in Redis.
+//
+// Strategy:
+//  1. Load all question IDs seen by these players in previous matches (to avoid
+//     cross-match repeats).
+//  2. For each difficulty bucket (40% easy, 40% medium, 20% hard), fetch ALL
+//     eligible IDs from Mongo and shuffle in Go — this guarantees zero intra-match
+//     duplicates (MongoDB $sample is documented to repeat docs on small collections).
+//  3. Each bucket excludes both previously-seen IDs AND IDs already picked by
+//     earlier buckets, so there is no way for the same question to appear twice.
+//  4. If the pool is too small to fill a bucket, the fill step draws from any
+//     difficulty as a fallback.
 func SelectForRoom(pool *goredis.Pool, db *mongo.Database, roomID string, players []string, count int) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -44,20 +55,25 @@ func SelectForRoom(pool *goredis.Pool, db *mongo.Database, roomID string, player
 
 	var questionIDs []string
 	for _, p := range picks {
-		ids, err := sampleQuestions(ctx, db, p.difficulty, p.n, seenIDs)
+		// Exclude both cross-match seen IDs AND IDs already picked this match.
+		excluded := append(seenIDs, questionIDs...)
+		ids, err := sampleQuestions(ctx, db, p.difficulty, p.n, excluded)
 		if err != nil {
 			return nil, fmt.Errorf("sample %s questions: %w", p.difficulty, err)
 		}
 		questionIDs = append(questionIDs, ids...)
 	}
 
-	// If not enough unseen questions, fill remaining slots by allowing repeats
-	// but still exclude questions already selected in this batch
+	// Safety-net deduplicate (should be a no-op with the above logic).
+	questionIDs = deduplicate(questionIDs)
+
+	// Fill remaining slots if any bucket came up short (small pool).
 	if len(questionIDs) < count {
 		remaining := count - len(questionIDs)
 		fillIDs, err := sampleQuestions(ctx, db, "", remaining, questionIDs)
 		if err == nil && len(fillIDs) > 0 {
 			questionIDs = append(questionIDs, fillIDs...)
+			questionIDs = deduplicate(questionIDs)
 		}
 	}
 
@@ -104,6 +120,17 @@ func fetchSeenQuestionIDs(ctx context.Context, db *mongo.Database, players []str
 	return seenSlice, nil
 }
 
+// sampleQuestions fetches ALL eligible question IDs from MongoDB matching the
+// given difficulty (empty = any), excludes seenIDs, then shuffles the result
+// in Go and returns the first n.
+//
+// WHY not $sample:
+//   MongoDB's $sample pipeline stage can return duplicate documents when the
+//   requested size is more than ~5% of the collection (it falls back to a
+//   random in-memory scan that re-visits documents). For a quiz with a small
+//   question bank this caused the same question to appear multiple times in
+//   one match. Fetching all IDs and shuffling in Go is O(pool) but guarantees
+//   strict uniqueness regardless of collection size.
 func sampleQuestions(ctx context.Context, db *mongo.Database, difficulty string, n int, seenIDs []string) ([]string, error) {
 	if n <= 0 {
 		return nil, nil
@@ -111,47 +138,66 @@ func sampleQuestions(ctx context.Context, db *mongo.Database, difficulty string,
 
 	col := db.Collection("questions")
 
-	matchFilter := bson.M{}
+	filter := bson.M{}
 	if difficulty != "" {
-		matchFilter["difficulty"] = difficulty
+		filter["difficulty"] = difficulty
 	}
 	if len(seenIDs) > 0 {
-		excludeIDs := make([]primitive.ObjectID, 0, len(seenIDs))
+		excludeOIDs := make([]primitive.ObjectID, 0, len(seenIDs))
 		for _, sid := range seenIDs {
-			oid, err := primitive.ObjectIDFromHex(sid)
-			if err == nil {
-				excludeIDs = append(excludeIDs, oid)
+			if oid, err := primitive.ObjectIDFromHex(sid); err == nil {
+				excludeOIDs = append(excludeOIDs, oid)
 			}
 		}
-		matchFilter["_id"] = bson.M{"$nin": excludeIDs}
+		if len(excludeOIDs) > 0 {
+			filter["_id"] = bson.M{"$nin": excludeOIDs}
+		}
 	}
 
-	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: matchFilter}},
-		{{Key: "$sample", Value: bson.M{"size": n}}},
-		{{Key: "$project", Value: bson.M{"_id": 1}}},
-	}
-
-	cursor, err := col.Aggregate(ctx, pipeline)
+	// Fetch only _id — minimal data transfer.
+	cursor, err := col.Find(ctx, filter, options.Find().SetProjection(bson.M{"_id": 1}))
 	if err != nil {
 		return nil, err
 	}
 	defer cursor.Close(ctx) //nolint:errcheck
 
-	var ids []string
+	var pool []string
 	for cursor.Next(ctx) {
-		var result struct {
+		var doc struct {
 			ID primitive.ObjectID `bson:"_id"`
 		}
-		if err := cursor.Decode(&result); err != nil {
+		if err := cursor.Decode(&doc); err != nil {
 			continue
 		}
-		ids = append(ids, result.ID.Hex())
+		pool = append(pool, doc.ID.Hex())
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, err
 	}
-	return ids, nil
+
+	if len(pool) == 0 {
+		return nil, nil
+	}
+
+	// Fisher-Yates shuffle — cryptographically seeded by math/rand/v2 default source.
+	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+
+	if n > len(pool) {
+		n = len(pool)
+	}
+	return pool[:n], nil
+}
+
+func deduplicate(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func storeInRedis(pool *goredis.Pool, roomID string, questionIDs []string) error {

@@ -46,6 +46,10 @@ class GameState {
   final int currentAnswerStreak; // consecutive correct answers this match
   final int maxAnswerStreak;     // best streak this match
 
+  // Win streak: consecutive rounds where THIS player was fastest AND correct
+  final int currentWinStreak;
+  final int maxWinStreak;
+
   // Error state
   final String? error;
 
@@ -66,6 +70,8 @@ class GameState {
     this.matchEnd,
     this.currentAnswerStreak = 0,
     this.maxAnswerStreak = 0,
+    this.currentWinStreak = 0,
+    this.maxWinStreak = 0,
     this.error,
   });
 
@@ -93,6 +99,8 @@ class GameState {
     MatchEndEvent? matchEnd,
     int? currentAnswerStreak,
     int? maxAnswerStreak,
+    int? currentWinStreak,
+    int? maxWinStreak,
     String? error,
     bool clearQuestion = false,
     bool clearAnswer = false,
@@ -116,6 +124,8 @@ class GameState {
       matchEnd: matchEnd ?? this.matchEnd,
       currentAnswerStreak: currentAnswerStreak ?? this.currentAnswerStreak,
       maxAnswerStreak: maxAnswerStreak ?? this.maxAnswerStreak,
+      currentWinStreak: currentWinStreak ?? this.currentWinStreak,
+      maxWinStreak: maxWinStreak ?? this.maxWinStreak,
       error: clearError ? null : (error ?? this.error),
     );
   }
@@ -296,12 +306,19 @@ class GameNotifier extends StateNotifier<GameState> {
     final newStreak = wasCorrect ? state.currentAnswerStreak + 1 : 0;
     final newMax = newStreak > state.maxAnswerStreak ? newStreak : state.maxAnswerStreak;
 
+    // Update win streak: correct AND fastest this round
+    final wasWinner = wasCorrect && e.fastestUserId == state.userId;
+    final newWinStreak = wasWinner ? state.currentWinStreak + 1 : 0;
+    final newMaxWin = newWinStreak > state.maxWinStreak ? newWinStreak : state.maxWinStreak;
+
     state = state.copyWith(
       phase: MatchPhase.betweenRounds,
       lastRoundResult: e,
       leaderboard: e.scores,
       currentAnswerStreak: newStreak,
       maxAnswerStreak: newMax,
+      currentWinStreak: newWinStreak,
+      maxWinStreak: newMaxWin,
     );
   }
 

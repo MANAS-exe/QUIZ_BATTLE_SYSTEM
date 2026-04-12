@@ -8,17 +8,19 @@ import '../models/game_event.dart';
 import '../providers/game_provider.dart';
 import '../services/auth_service.dart';
 import '../services/game_service.dart';
+import '../services/reconnect_service.dart';
+import '../theme/colors.dart';
 
 // ─────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────
 
-const _coral = Color(0xFFC96442);
-const _bg = Color(0xFF0D0D1A);
-const _surface = Color(0xFF1A1A2E);
-const _gold = Color(0xFFFFB830);
-const _green = Color(0xFF2ECC71);
-const _red = Color(0xFFE74C3C);
+const _coral   = appCoral;
+const _bg      = appBg;
+const _surface = appSurface;
+const _gold    = appGold;
+const _green   = appGreen;
+const _red     = appRed;
 
 // ─────────────────────────────────────────
 // OPTION STATE ENUM
@@ -80,12 +82,15 @@ class _QuizScreenState extends ConsumerState<QuizScreen>
       return;
     }
 
-    // Use the raw stream — the onDone handler in GameNotifier acts as safety net
-    // for stream close (creates synthetic MatchEnd from leaderboard).
-    // The reconnect service causes spurious retries when the game legitimately ends.
-    final stream = ref
-        .read(gameServiceProvider)
-        .streamGameEvents(roomId, userId);
+    // Use the ReconnectService for exponential-backoff reconnection on drop.
+    // The service stops retrying as soon as it receives a MatchEndEvent or a
+    // clean stream close, so it won't loop after the game legitimately ends.
+    final stream = ref.read(reconnectServiceProvider).watchStream(
+      roomId: roomId,
+      userId: userId,
+      onStateChange: (s) =>
+          ref.read(reconnectStateProvider.notifier).update(s),
+    );
 
     ref.read(gameProvider.notifier).subscribeToGameEvents(stream);
   }
@@ -119,20 +124,9 @@ class _QuizScreenState extends ConsumerState<QuizScreen>
       }
     });
 
-    // If phase already changed before this build (e.g. rapid RoundResult + MatchEnd)
-    if (gameState.phase == MatchPhase.finished) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) context.goNamed('results');
-      });
-    } else if (gameState.phase == MatchPhase.betweenRounds) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) context.goNamed('leaderboard');
-      });
-    }
-
     // Navigate on phase change
-    ref.listen(matchPhaseProvider, (_, next) {
-      if (!mounted) return;
+    ref.listen(matchPhaseProvider, (prev, next) {
+      if (!mounted || prev == next) return;
       if (next == MatchPhase.betweenRounds) context.goNamed('leaderboard');
       if (next == MatchPhase.finished) context.goNamed('results');
     });

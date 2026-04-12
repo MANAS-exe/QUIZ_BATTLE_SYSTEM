@@ -71,25 +71,46 @@ func main() {
 
 	// Register matchmaking handler
 	matchHandler := handlers.NewMatchmakingHandler(redisPool, publisher)
+	matchHandler.SetMongoDB(mongoDB)
 	matchHandler.Register(grpcServer)
 
 	reflection.Register(grpcServer)
 
 	// ── gRPC-Web HTTP server (for Flutter Web / Chrome) ──────
+	// Also mounts REST endpoints for OAuth flows that don't fit gRPC:
+	//   POST /auth/google  — Google Sign-In ID token verification + user upsert
 	grpcWebAddr := getEnv("GRPC_WEB_ADDR", ":8080")
 	wrappedGrpc := grpcweb.WrapServer(grpcServer,
 		grpcweb.WithOriginFunc(func(origin string) bool { return true }),
 	)
+
+	googleAuthHandler := handlers.NewGoogleAuthHandler(mongoDB)
+	leaderboardHandler := handlers.NewLeaderboardHTTPHandler(mongoDB)
+
+	mux := http.NewServeMux()
+	mux.Handle("/leaderboard", leaderboardHandler)
+	mux.HandleFunc("/auth/google", func(w http.ResponseWriter, r *http.Request) {
+		// CORS preflight
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		googleAuthHandler.ServeHTTP(w, r)
+	})
+
 	go func() {
-		log.Printf("🌐 gRPC-Web server listening on %s", grpcWebAddr)
+		log.Printf("🌐 HTTP server listening on %s (gRPC-Web + REST auth)", grpcWebAddr)
 		if err := http.ListenAndServe(grpcWebAddr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if wrappedGrpc.IsGrpcWebRequest(r) || wrappedGrpc.IsAcceptableGrpcCorsRequest(r) {
 				wrappedGrpc.ServeHTTP(w, r)
 				return
 			}
-			http.NotFound(w, r)
+			mux.ServeHTTP(w, r)
 		})); err != nil {
-			log.Printf("❌ gRPC-Web server error: %v", err)
+			log.Printf("❌ HTTP server error: %v", err)
 		}
 	}()
 

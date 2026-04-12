@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gomodule/redigo/redis"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -34,6 +36,7 @@ type MatchmakingHandler struct {
 
 	pool      *redis.Pool
 	publisher *rabbitmq.Publisher
+	mongoDB   *mongo.Database
 
 	// mu guards playerChans — one buffered channel per waiting player
 	mu          sync.Mutex
@@ -46,6 +49,11 @@ func NewMatchmakingHandler(pool *redis.Pool, publisher *rabbitmq.Publisher) *Mat
 		publisher:   publisher,
 		playerChans: make(map[string]chan *quiz.MatchEvent),
 	}
+}
+
+// SetMongoDB attaches a MongoDB database handle used for feature-gating queries.
+func (h *MatchmakingHandler) SetMongoDB(db *mongo.Database) {
+	h.mongoDB = db
 }
 
 // Register wires this handler into the gRPC server using the generated descriptor.
@@ -66,6 +74,13 @@ func (h *MatchmakingHandler) JoinMatchmaking(ctx context.Context, req *quiz.Join
 	}
 	if req.UserId == "" || req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id and username are required")
+	}
+
+	// ── Feature gating: enforce free-tier daily quiz limit ────
+	if h.mongoDB != nil {
+		if err := h.enforceQuotaAndIncrement(ctx, req.UserId); err != nil {
+			return nil, err
+		}
 	}
 
 	// Clean up any stale channel from a previous session (e.g. Play Again)
@@ -411,4 +426,74 @@ func (h *MatchmakingHandler) tryCreateRoom() {
 	}
 
 	log.Printf("🏠 Room %s created with %d players", room.ID, len(players))
+}
+
+// ─────────────────────────────────────────────────────────────
+// enforceQuotaAndIncrement — free-tier daily quiz limit
+// ─────────────────────────────────────────────────────────────
+
+// enforceQuotaAndIncrement checks whether the user is allowed to join a match.
+// Free users are limited to 1 quiz per day. Premium users (active subscription)
+// have unlimited access. If allowed, it increments daily_quiz_used atomically.
+func (h *MatchmakingHandler) enforceQuotaAndIncrement(ctx context.Context, userID string) error {
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// 1. Check for an active premium subscription
+	subsColl := h.mongoDB.Collection("subscriptions")
+	subsCount, err := subsColl.CountDocuments(dbCtx, bson.M{
+		"user_id":    userID,
+		"status":     "active",
+		"expires_at": bson.M{"$gt": time.Now()},
+	})
+	if err != nil {
+		log.Printf("enforceQuota: subscription lookup error for user %s: %v", userID, err)
+		// Fail open — don't block the user if the DB is unavailable
+		return nil
+	}
+	if subsCount > 0 {
+		// Premium user — no limit, skip quota check
+		return nil
+	}
+
+	// 2. Look up the user's daily quota fields
+	usersColl := h.mongoDB.Collection("users")
+	var userDoc struct {
+		DailyQuizUsed int    `bson:"daily_quiz_used"`
+		LastQuizDate  string `bson:"last_quiz_date"` // stored as "YYYY-MM-DD"
+	}
+	err = usersColl.FindOne(dbCtx, bson.M{"_id": userID}).Decode(&userDoc)
+	if err != nil && err != mongo.ErrNoDocuments {
+		log.Printf("enforceQuota: user lookup error for %s: %v", userID, err)
+		// Fail open
+		return nil
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// If last_quiz_date is a different day, the counter resets
+	usedToday := 0
+	if userDoc.LastQuizDate == today {
+		usedToday = userDoc.DailyQuizUsed
+	}
+
+	if usedToday >= 5 {
+		return status.Error(codes.ResourceExhausted,
+			"Daily free limit reached. Upgrade to Premium for unlimited games.")
+	}
+
+	// 3. Increment the counter (and update date) atomically
+	_, err = usersColl.UpdateOne(dbCtx,
+		bson.M{"_id": userID},
+		bson.M{"$set": bson.M{
+			"last_quiz_date":  today,
+			"daily_quiz_used": usedToday + 1,
+		}},
+	)
+	if err != nil {
+		log.Printf("enforceQuota: failed to increment daily_quiz_used for user %s: %v", userID, err)
+		// Fail open — don't block the user
+	}
+
+	return nil
 }

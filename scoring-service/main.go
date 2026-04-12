@@ -74,6 +74,37 @@ func main() {
 		}
 	}()
 
+	// ── Match-finished consumer ───────────────────────────────
+	// Declares match-finished-queue (bound to match.finished routing key).
+	// Logs match completion events and is the extension point for post-match
+	// processing (rating recalculation, push notifications, etc.).
+	matchConsumer, err := rabbitmq.NewMatchFinishedConsumer(amqpURL)
+	if err != nil {
+		log.Fatalf("❌ Cannot start match-finished consumer: %v", err)
+	}
+	defer matchConsumer.Close()
+
+	go func() {
+		if err := matchConsumer.Start(context.Background()); err != nil {
+			log.Printf("❌ Match-finished consumer stopped: %v", err)
+		}
+	}()
+
+	// ── Analytics consumer ────────────────────────────────────
+	// Declares match-analytics-queue (also bound to match.finished). Receives
+	// an independent copy of each match.finished event for analytics logging.
+	analyticsConsumer, err := rabbitmq.NewAnalyticsConsumer(amqpURL)
+	if err != nil {
+		log.Fatalf("❌ Cannot start analytics consumer: %v", err)
+	}
+	defer analyticsConsumer.Close()
+
+	go func() {
+		if err := analyticsConsumer.Start(context.Background()); err != nil {
+			log.Printf("❌ Analytics consumer stopped: %v", err)
+		}
+	}()
+
 	log.Printf("🚀 Scoring gRPC server listening on %s", grpcAddr)
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("❌ gRPC server error: %v", err)

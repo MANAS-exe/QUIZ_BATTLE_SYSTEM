@@ -4,10 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../providers/game_provider.dart';
+import '../services/auth_service.dart';
+import '../theme/colors.dart';
 
-const _coral = Color(0xFFC96442);
-const _bg = Color(0xFF0D0D1A);
-const _surface = Color(0xFF1A1A2E);
+const _coral   = appCoral;
+const _bg      = appBg;
+const _surface = appSurface;
 
 class SpectatingScreen extends ConsumerStatefulWidget {
   const SpectatingScreen({super.key});
@@ -29,18 +31,18 @@ class _SpectatingScreenState extends ConsumerState<SpectatingScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(gameProvider);
 
-    // Navigate instantly when phase becomes finished (from any source)
-    if (state.phase == MatchPhase.finished || state.matchEnd != null) {
+    // Navigate on phase change
+    ref.listen(matchPhaseProvider, (prev, next) {
+      if (!context.mounted || prev == next) return;
+      if (next == MatchPhase.finished) _goToResults();
+    });
+
+    // If phase is already finished when screen mounts
+    if ((state.phase == MatchPhase.finished || state.matchEnd != null) && !_navigated) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _goToResults();
       });
     }
-
-    // Also listen for phase changes
-    ref.listen(matchPhaseProvider, (_, next) {
-      if (!context.mounted) return;
-      if (next == MatchPhase.finished) _goToResults();
-    });
 
     return Scaffold(
       backgroundColor: _bg,
@@ -208,6 +210,28 @@ class _SpectatingScreenState extends ConsumerState<SpectatingScreen> {
                   width: double.infinity,
                   child: OutlinedButton(
                     onPressed: () {
+                      // Save stats before resetting — forfeited player never
+                      // reaches ResultsScreen, so we record here instead.
+                      final gs = ref.read(gameProvider);
+                      final myScore = gs.leaderboard
+                          .where((s) => s.userId == gs.userId)
+                          .firstOrNull;
+                      ref.read(authProvider.notifier).recordMatchResult(
+                            won: false,
+                            newRating: ref.read(authProvider).rating,
+                            matchMaxStreak: gs.maxAnswerStreak,
+                            lastMatch: LastMatchData(
+                              won: false,
+                              rank: myScore?.rank ?? gs.leaderboard.length,
+                              score: myScore?.score ?? 0,
+                              answersCorrect: myScore?.answersCorrect ?? 0,
+                              totalRounds: gs.totalRounds,
+                              avgResponseMs: myScore?.avgResponseMs ?? 0,
+                              durationSeconds: 0,
+                              maxStreak: gs.maxAnswerStreak,
+                              winnerUsername: '',
+                            ),
+                          );
                       ref.read(gameProvider.notifier).reset();
                       context.goNamed('matchmaking');
                     },

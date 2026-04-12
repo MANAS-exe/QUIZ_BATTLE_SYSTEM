@@ -184,14 +184,39 @@ timerLoop:
 		}
 	}
 
-	// ── 6. Publish round.completed ─────────────────────────────────────────────
+	// ── 6. Round-completion dedup guard (SETNX) ───────────────────────────────
+	// If the timer fires at the same moment as "all players answered", two
+	// goroutines could both exit the loop and try to close the round. SETNX
+	// ensures only the first one proceeds; the second sees key=1 and returns.
+	{
+		closedKey := fmt.Sprintf("room:%s:round:%d:closed", roomID, roundNum)
+		guardConn := s.rdb.Get()
+		n, setnxErr := goredis.Int(guardConn.Do("SETNX", closedKey, "1"))
+		guardConn.Do("EXPIRE", closedKey, 30*60) //nolint:errcheck
+		guardConn.Close()
+
+		if setnxErr != nil || n == 0 {
+			log.Printf("⚠️  room=%s round=%d already closed — duplicate completion ignored", roomID, roundNum)
+			correctText := ""
+			if q.CorrectIndex >= 0 && q.CorrectIndex < len(q.Options) {
+				correctText = q.Options[q.CorrectIndex]
+			}
+			return &RoundInfo{
+				QuestionID:        questionID,
+				CorrectIndex:      q.CorrectIndex,
+				CorrectAnswerText: correctText,
+			}, nil
+		}
+	}
+
+	// ── 7. Publish round.completed ─────────────────────────────────────────────
 	if err := s.publisher.PublishRoundCompleted(
 		roomID, roundNum, questionID, q.CorrectIndex, roundStartedAtMs,
 	); err != nil {
 		log.Printf("WARN publish round.completed room=%s round=%d: %v", roomID, roundNum, err)
 	}
 
-	// ── 7. Publish match.finished when no questions remain ─────────────────────
+	// ── 8. Publish match.finished when no questions remain ─────────────────────
 	remaining, err := goredis.Int64(conn.Do("LLEN", questionsKey))
 	if err != nil {
 		log.Printf("WARN check remaining questions room=%s: %v", roomID, err)

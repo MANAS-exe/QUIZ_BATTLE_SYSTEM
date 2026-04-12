@@ -83,6 +83,22 @@ func main() {
 		}
 	}()
 
+	// ── Round.completed consumer ──────────────────────────────
+	// Declares round-completed-queue so published events are never silently
+	// discarded. The game loop handles round completion inline; this consumer
+	// provides queue binding + observability logging.
+	roundConsumer, err := rabbitmq.NewRoundConsumer(amqpURL)
+	if err != nil {
+		log.Fatalf("❌ Cannot start round consumer: %v", err)
+	}
+	defer roundConsumer.Close()
+
+	go func() {
+		if err := roundConsumer.Start(context.Background()); err != nil {
+			log.Printf("❌ Round consumer stopped: %v", err)
+		}
+	}()
+
 	log.Printf("🚀 Quiz gRPC server listening on %s", grpcAddr)
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("❌ gRPC server error: %v", err)
