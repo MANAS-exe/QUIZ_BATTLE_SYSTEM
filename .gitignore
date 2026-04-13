@@ -6,6 +6,12 @@
 *.iml
 .vscode/
 
+# Secrets / environment
+.env
+.env.*
+*.env
+**/.env
+
 # Flutter
 flutter-app/.dart_tool/
 flutter-app/build/
@@ -20,4 +26,7 @@ flutter-app/.packages
 
 # Docker
 mongo-data/
-android/app/google-services.json
+
+# Firebase / Google
+**/google-services.json
+**/GoogleService-Info.plist

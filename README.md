@@ -1,8 +1,8 @@
 # Quiz Battle
 
-Real-time multiplayer quiz game built with a **microservices architecture** — 3 Go gRPC services + 1 HTTP payment service, Flutter frontend, MongoDB, Redis, and RabbitMQ.
+Real-time multiplayer quiz game built with a **microservices architecture** — 5 Go backend services (3 gRPC + 1 HTTP + 1 worker), Flutter frontend, MongoDB, Redis, RabbitMQ, and Firebase Cloud Messaging.
 
-Players register (email/password or Google), get matched with opponents, compete across timed rounds with difficulty-based scoring and speed bonuses, climb persistent leaderboards, and earn daily rewards for logging in every day.
+Players register (email/password or Google), get matched with opponents, compete across timed rounds with difficulty-based scoring and speed bonuses, climb persistent leaderboards, earn daily rewards, refer friends, purchase premium via Razorpay, and receive FCM push notifications.
 
 ---
 
@@ -31,10 +31,11 @@ Players register (email/password or Google), get matched with opponents, compete
 
 | Service | Port | Responsibilities |
 |---------|------|-----------------|
-| **Matchmaking** | :50051 | User registration/login (JWT), Google OAuth, matchmaking pool, room creation, publishes `match.created` |
-| **Quiz Engine** | :50052 | Consumes `match.created` (selects questions), runs game loop, streams events to clients, publishes `answer.submitted` |
-| **Scoring** | :50053 | Consumes `answer.submitted` (validates + scores), updates Redis leaderboard, exposes `GetLeaderboard` RPC |
-| **Payment** | :8081 | Razorpay order creation, HMAC verification, subscription activation, premium status API |
+| **Matchmaking** | :50051 / :8080 | User registration/login (JWT), Google OAuth, matchmaking pool, room creation, referral system, device token registration |
+| **Quiz Engine** | :50052 | Consumes `match.created` (selects questions), runs game loop, streams events to clients, late-joiner catch-up |
+| **Scoring** | :50053 | Consumes `answer.submitted` (validates + scores), updates Redis leaderboard, server-side leaderboard cap for free users |
+| **Payment** | :8081 | Razorpay order creation, HMAC verification, subscription activation, coupon validation, publishes `payment.success` to RabbitMQ |
+| **Notification Worker** | — | FCM push notifications, RabbitMQ consumers (referral conversion), cron scheduler (streak/daily/premium expiry) |
 
 ### Inter-Service Communication
 
@@ -46,7 +47,11 @@ Players register (email/password or Google), get matched with opponents, compete
 | Flutter | Matchmaking | gRPC :50051 | Register, Login, GoogleAuth, JoinMatchmaking, SubscribeToMatch |
 | Flutter | Quiz Engine | gRPC :50052 | StreamGameEvents, SubmitAnswer |
 | Flutter | Scoring | gRPC :50053 | GetLeaderboard |
-| Flutter | Payment | HTTP :8081 | CreateOrder, VerifyPayment, GetStatus |
+| Flutter | Payment | HTTP :8081 | CreateOrder, VerifyPayment, GetStatus, ValidateCoupon |
+| Payment | (any) | RabbitMQ | `payment.success` (post-capture event) |
+| Quiz Engine | Notification Worker | RabbitMQ | `match.finished` (triggers referral conversion notification) |
+| (cron/event) | Notification Worker | RabbitMQ | `notification.*` (streak, daily reward, tournament, premium expiry) |
+| Notification Worker | Devices | FCM | Push notifications to Android/iOS devices |
 
 ---
 
@@ -62,6 +67,7 @@ Players register (email/password or Google), get matched with opponents, compete
 | Message Broker | RabbitMQ 3 | Async inter-service communication |
 | Auth | JWT (HS256) + bcrypt + Google OAuth | Token-based auth with Google Sign-In |
 | Payments | Razorpay | Premium subscriptions (monthly/yearly) |
+| Push Notifications | Firebase Cloud Messaging (FCM) | Streak warnings, referral conversions, tournament reminders |
 | State Management | Riverpod | Flutter reactive state |
 | Navigation | GoRouter | Declarative routing with auth guards |
 | Local Storage | SharedPreferences | JWT, streaks, coins, daily quota, login history |
@@ -85,7 +91,10 @@ quiz_battle/
 │   ├── handlers/
 │   │   ├── auth.go                    # Register / Login (bcrypt + JWT)
 │   │   ├── google_auth.go             # Google ID token verification + upsert
-│   │   └── matchmaking.go            # Join/Leave pool, room creation, WaitingUpdate broadcast
+│   │   ├── matchmaking.go            # Join/Leave pool, room creation, server-side quota enforcement
+│   │   ├── referral.go               # Referral system (get code, apply, claim, history)
+│   │   ├── device_token.go           # POST /device/token (FCM token registration)
+│   │   └── redis_keys.go             # PopulateUserRedisKeys — mirrors user state to Redis on login
 │   ├── redis/
 │   │   ├── room.go                    # CreateRoom with distributed lock + pipeline
 │   │   └── lock.go                    # SET NX EX with UUID owner + Lua compare-and-delete
@@ -114,10 +123,10 @@ quiz_battle/
 │   ├── Dockerfile
 │   ├── main.go                        # HTTP server (Gin)
 │   ├── handlers/
-│   │   └── payment.go                 # CreateOrder, VerifyPayment, GetStatus, GetHistory
-│   ├── middleware/
-│   │   └── auth.go                    # JWT validation for HTTP routes
-│   └── .env                           # Razorpay keys + JWT secret (see Environment Variables)
+│   │   ├── payment.go                 # CreateOrder, VerifyPayment, GetStatus, GetHistory, ValidateCoupon
+│   │   └── webhook.go                 # Razorpay webhook handler, HMAC verification, publishes payment.success
+│   └── rabbitmq/
+│       └── publisher.go               # RabbitMQ publisher for payment-success-queue
 ├── flutter-app/
 │   ├── pubspec.yaml
 │   └── lib/
@@ -127,7 +136,8 @@ quiz_battle/
 │       ├── services/
 │       │   ├── auth_service.dart      # AuthState + AuthNotifier (JWT, Google, streaks, coins, rewards)
 │       │   ├── game_service.dart      # 3 gRPC channels (50051/50052/50053), all RPC methods
-│       │   └── reconnect_service.dart # Exponential backoff (1-16s, 5 retries)
+│       │   ├── reconnect_service.dart # Exponential backoff (1-16s, 5 retries)
+│       │   └── notification_service.dart # FCM permission, token registration, foreground/background handlers
 │       ├── providers/
 │       │   └── game_provider.dart     # Central game state machine (8 phases, win streak)
 │       └── screens/
@@ -141,16 +151,27 @@ quiz_battle/
 │           ├── profile_screen.dart    # 4 tabs: Profile / Last Match / Badges / Streak
 │           ├── premium_screen.dart    # Razorpay payment flow
 │           └── global_leaderboard_screen.dart
+├── notification-worker/                # Background worker (no port)
+│   ├── Dockerfile
+│   ├── main.go                        # Entry point — FCM + RabbitMQ consumers + scheduler
+│   └── worker/
+│       ├── fcm.go                     # Firebase Admin SDK wrapper (Send, SendMulticast)
+│       ├── consumer.go                # RabbitMQ consumers (notification.*, match.finished)
+│       ├── scheduler.go               # Cron jobs (streak warning, daily reward, premium expiry)
+│       └── db.go                      # MongoDB helpers for token/user/subscription lookups
 ├── mongo-init/
-│   └── init.js                        # Seed 60 questions + create indexes
-├── docker-compose.yml                 # All 4 services + MongoDB + Redis + RabbitMQ
+│   └── init.js                        # Seed 30 questions + create all indexes
+├── docker-compose.yml                 # All 5 services + MongoDB + Redis + RabbitMQ
 ├── Makefile                           # proto, infra, up, down, test, run-*, seed, kill
 ├── docs/
-│   ├── architecture.md                # Detailed architecture + Phase audits
+│   ├── architecture.md                # Detailed architecture + Phase audits + resolved gaps
 │   ├── daily-rewards.md               # Daily rewards system spec
 │   ├── home-screen.md                 # Home screen design decisions
 │   ├── razorpay.md                    # Razorpay integration guide
 │   ├── google-auth.md                 # Google Sign-In setup
+│   ├── referral.md                    # Referral system spec
+│   ├── push-notifications.md          # FCM integration + testing guide
+│   ├── GAPS_AND_PLAN.md               # Audit gaps + resolution log
 │   └── BUGS_AND_FIXES.md              # Known bugs + fixes log
 └── README.md
 ```
@@ -584,6 +605,9 @@ All quota checks, upsell card visibility, and leaderboard limits use `isEffectiv
 | Matchmaking | `matchmaking:pool`, `player:{id}`, `room:{id}:state`, `room:{id}:players`, `room:lock:{id}` | 30 min |
 | Quiz Engine | `room:{id}:questions`, `room:{id}:submitted:{round}`, `room:{id}:round:{n}:started_at`, `room:{id}:round:{n}:closed` | 30 min |
 | Scoring | `room:{id}:leaderboard`, `room:{id}:answers:{round}`, `room:{id}:correct_counts`, `room:{id}:response_sum`, `room:{id}:response_count` | 30 min |
+| User/Premium | `user:{id}:plan` → free/premium, `user:{id}:daily_quota` → remaining or "unlimited" | 1 day |
+| Referral | `referral:code:{code}` → userId | no TTL |
+| Streak | `user:{id}:streak` hash → {current, longest, last_login} | no TTL |
 
 ---
 
@@ -595,6 +619,9 @@ All quota checks, upsell card visibility, and leaderboard limits use `isEffectiv
 | `questions` | Quiz Engine | `text`, `options[4]`, `correctIndex`, `difficulty` (indexed), `topic` |
 | `match_history` | Quiz Engine | `players[].userId` (indexed), `questionIds[]` |
 | `payments` | Payment | `userId`, `orderId`, `paymentId`, `plan`, `status`, `expiresAt` |
+| `subscriptions` | Payment | `user_id`, `plan`, `status`, `expires_at`, `razorpay_order_id` |
+| `device_tokens` | Matchmaking | `user_id` (unique), `token`, `platform`, `updated_at` |
+| `referrals` | Matchmaking | `referrer_id`, `referee_id` (unique), `code_used`, `created_at` |
 
 ---
 
@@ -628,7 +655,9 @@ All keys namespaced by `stats_<userId>_*`:
 | `match.created` | Matchmaking | Quiz Engine | roomId, players[], totalRounds |
 | `answer.submitted` | Quiz Engine | Scoring | roomId, userId, roundNumber, questionId, answerIndex, timestamps |
 | `round.completed` | Quiz Engine | (logged) | roomId, roundNumber, correctIndex |
-| `match.finished` | Quiz Engine | (logged) | roomId, totalRounds |
+| `match.finished` | Quiz Engine | Scoring + Notification Worker | roomId, totalRounds |
+| `notification.*` | (cron/event) | Notification Worker | type, title, body, user_ids? |
+| `payment.success` | Payment | — | order_id, user_id, plan, amount, captured_at |
 
 ---
 
@@ -644,15 +673,24 @@ All keys namespaced by `stats_<userId>_*`:
 | `MONGO_URI` | `mongodb://localhost:27017` | MongoDB URI |
 | `JWT_SECRET` | `your-secret-key` | Shared JWT signing secret |
 
-### Payment service (`payment-service/.env`)
+### Payment service
 
 | Variable | Description |
 |----------|-------------|
 | `RAZORPAY_KEY_ID` | Razorpay API key (starts with `rzp_test_`) |
 | `RAZORPAY_KEY_SECRET` | Razorpay secret for HMAC verification |
-| `JWT_SECRET` | Must match the value in matchmaking-service |
+| `RAZORPAY_WEBHOOK_SECRET` | Razorpay webhook signing secret |
+| `RABBITMQ_URL` | RabbitMQ URL (for payment-success-queue) |
 | `MONGO_URI` | MongoDB connection string |
 | `PORT` | HTTP listen port (default `:8081`) |
+
+### Notification worker (`notification-worker/.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `FIREBASE_CREDENTIALS_JSON` | Firebase service account JSON (single line) |
+| `RABBITMQ_URL` | RabbitMQ URL |
+| `MONGO_URI` | MongoDB connection string |
 
 ---
 
@@ -759,7 +797,7 @@ Flutter tests cover:
 | 9 | Timer sync server→client | ✅ | TimerSync every 1s with DeadlineMs |
 | 10 | Idempotent answer processing | ✅ | HSETNX + HEXISTS double guard |
 | 11 | PlayerJoined event broadcast | ✅ | Broadcast on StreamGameEvents subscription |
-| 12 | Late joiner / mid-match join | ⚠️ | Gets live stream from reconnection point; past events not replayed |
+| 12 | Late joiner / mid-match join | ✅ | Late joiner receives current question + TimerSync on connect |
 | 13 | Proper error handling | ✅ | gRPC status codes, ACK/NACK, try/catch in Flutter |
 | 14 | All proto RPCs implemented | ✅ | Register, Login, GoogleAuth, Join/Leave/Subscribe, Stream/Submit, Score/GetLeaderboard |
 | 15 | Docker includes all services | ✅ | mongo + redis + rabbitmq + 4 Go services, all with healthchecks |
@@ -783,5 +821,13 @@ Flutter tests cover:
 | Coins system | ✅ | `AuthState.coins`, Profile → STREAK tab |
 | Premium trial (day-30 streak reward) | ✅ | `AuthState.isEffectivelyPremium` |
 | 30-day login calendar | ✅ | Profile → STREAK tab |
+| Referral system (anti-abuse) | ✅ | `matchmaking-service/handlers/referral.go`, Profile → REFERRAL tab |
+| Coupon/referral discount on premium | ✅ | `payment-service/handlers/payment.go` → `ValidateCoupon` |
+| FCM push notifications (5 types) | ✅ | `notification-worker/`, `notification_service.dart` |
+| Server-side daily quota enforcement | ✅ | `matchmaking.go` → `enforceQuotaAndIncrement()` |
+| Leaderboard cap for free users | ✅ | `scoring.go` → `GetLeaderboard()` caps to top 3 + own |
+| Late joiner catch-up | ✅ | `quiz_handler.go` → sends current question on connect |
+| Redis observability keys | ✅ | `redis_keys.go` → plan, quota, streak, referral on login |
+| `payment-success-queue` in RabbitMQ | ✅ | `payment-service/rabbitmq/publisher.go` |
 
 **Docs:** See [docs/](docs/) for detailed specs on each feature.

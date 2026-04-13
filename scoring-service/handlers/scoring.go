@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	goredis "github.com/gomodule/redigo/redis"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -14,6 +16,7 @@ import (
 
 	quiz "github.com/yourorg/quiz-battle/proto/quiz"
 	rdb "quiz-battle/scoring/redis"
+	"quiz-battle/shared/middleware"
 )
 
 // ScoringHandler implements quiz.ScoringServiceServer.
@@ -78,10 +81,44 @@ func (h *ScoringHandler) GetLeaderboard(ctx context.Context, req *quiz.Leaderboa
 		return nil, status.Errorf(codes.Internal, "build scores: %v", err)
 	}
 
+	// ── Leaderboard cap for free users ───────────────────────
+	// Free users see only top 3 + their own entry.
+	// Premium users see the full leaderboard.
+	userID := middleware.UserIDFromContext(ctx)
+	if userID != "" && !h.isPremium(ctx, userID) && len(scores) > 3 {
+		capped := scores[:3]
+		// Append the calling user's entry if not already in top 3
+		for _, s := range scores[3:] {
+			if s.UserId == userID {
+				capped = append(capped, s)
+				break
+			}
+		}
+		scores = capped
+	}
+
 	return &quiz.LeaderboardResponse{
 		RoomId: req.RoomId,
 		Scores: scores,
 	}, nil
+}
+
+// isPremium checks if a user has an active premium subscription.
+func (h *ScoringHandler) isPremium(ctx context.Context, userID string) bool {
+	if h.mongoDB == nil {
+		return false
+	}
+	subsColl := h.mongoDB.Collection("subscriptions")
+	count, err := subsColl.CountDocuments(ctx, bson.M{
+		"user_id":    userID,
+		"status":     "active",
+		"expires_at": bson.M{"$gt": time.Now()},
+	})
+	if err != nil {
+		log.Printf("⚠️  isPremium check failed for user %s: %v", userID, err)
+		return false // fail open — show full leaderboard
+	}
+	return count > 0
 }
 
 // buildPlayerScores fetches leaderboard + player metadata from Redis.

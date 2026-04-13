@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	goredis "github.com/gomodule/redigo/redis"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -83,6 +84,7 @@ const (
 type ReferralHandler struct {
 	users     *mongo.Collection
 	referrals *mongo.Collection
+	redisPool *goredis.Pool
 }
 
 // NewReferralHandler creates a ReferralHandler attached to the given MongoDB database.
@@ -91,6 +93,11 @@ func NewReferralHandler(db *mongo.Database) *ReferralHandler {
 		users:     db.Collection("users"),
 		referrals: db.Collection("referrals"),
 	}
+}
+
+// SetRedisPool attaches a Redis pool for caching referral code lookups.
+func (h *ReferralHandler) SetRedisPool(pool *goredis.Pool) {
+	h.redisPool = pool
 }
 
 // referralEvent is the document stored in the "referrals" collection.
@@ -169,6 +176,12 @@ func (h *ReferralHandler) GetCode(w http.ResponseWriter, r *http.Request) {
 		}
 		user.ReferralCode = code
 		log.Printf("✅ referral: lazily generated code %s for user %s", code, userID)
+		// Cache in Redis for demo observability
+		if h.redisPool != nil {
+			rc := h.redisPool.Get()
+			rc.Do("SET", fmt.Sprintf("referral:code:%s", code), userID) //nolint:errcheck
+			rc.Close()
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)

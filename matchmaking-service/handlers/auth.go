@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	goredis "github.com/gomodule/redigo/redis"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -34,13 +35,21 @@ type User struct {
 // AuthHandler implements quiz.AuthServiceServer.
 type AuthHandler struct {
 	quiz.UnimplementedAuthServiceServer
-	users *mongo.Collection
+	users     *mongo.Collection
+	mongoDB   *mongo.Database
+	redisPool *goredis.Pool
 }
 
 func NewAuthHandler(mongoDB *mongo.Database) *AuthHandler {
 	return &AuthHandler{
-		users: mongoDB.Collection("users"),
+		users:   mongoDB.Collection("users"),
+		mongoDB: mongoDB,
 	}
+}
+
+// SetRedisPool attaches a Redis pool for populating observability keys on login.
+func (h *AuthHandler) SetRedisPool(pool *goredis.Pool) {
+	h.redisPool = pool
 }
 
 func (h *AuthHandler) RegisterService(s *grpc.Server) {
@@ -108,6 +117,9 @@ func (h *AuthHandler) Register(ctx context.Context, req *quiz.AuthRequest) (*qui
 
 	log.Printf("✅ New user registered: %s (%s)", req.Username, userID)
 
+	// Fire-and-forget: populate Redis observability keys
+	go PopulateUserRedisKeys(h.redisPool, h.mongoDB, userID)
+
 	return &quiz.AuthResponse{
 		Success:  true,
 		Token:    token,
@@ -151,6 +163,9 @@ func (h *AuthHandler) Login(ctx context.Context, req *quiz.AuthRequest) (*quiz.A
 	}
 
 	log.Printf("✅ User logged in: %s (%s)", user.Username, userID)
+
+	// Fire-and-forget: populate Redis observability keys
+	go PopulateUserRedisKeys(h.redisPool, h.mongoDB, userID)
 
 	return &quiz.AuthResponse{
 		Success:  true,

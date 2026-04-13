@@ -4,10 +4,11 @@
 
 ```
 Flutter App
-  ├── gRPC :50051 ──► Matchmaking Service   (Auth + Matchmaking)
+  ├── gRPC :50051 ──► Matchmaking Service   (Auth + Matchmaking + Referral)
   ├── gRPC :50052 ──► Quiz Engine Service   (Game loop + questions)
   ├── gRPC :50053 ──► Scoring Service       (Leaderboard + stats)
-  └── HTTP :8081  ──► Payment Service       (Razorpay + subscriptions)
+  ├── HTTP :8081  ──► Payment Service       (Razorpay + subscriptions)
+  └── FCM  ◄──────── Notification Worker    (Push notifications)
 
 RabbitMQ Exchange: sx (topic, durable)
   match.created      → quiz-match-created-queue     (Quiz Engine)
@@ -16,6 +17,9 @@ RabbitMQ Exchange: sx (topic, durable)
   round.completed    → round-completed-queue        (Quiz Engine logging)
   match.finished     → match-finished-queue         (Scoring: persistence)
                      → match-analytics-queue        (Scoring: analytics stub)
+                     → notification-match-queue      (Notification Worker: referral conversion)
+  notification.*     → notification-worker-queue     (Notification Worker: push notifications)
+  payment.success    → payment-success-queue         (Payment Service: post-capture event)
 ```
 
 ---
@@ -24,10 +28,11 @@ RabbitMQ Exchange: sx (topic, durable)
 
 | Service | Port | Binary | Responsibilities |
 |---------|------|--------|-----------------|
-| Matchmaking | `:50051` | `matchmaking-service/main.go` | Register/Login/Google OAuth, JoinMatchmaking, SubscribeToMatch |
+| Matchmaking | `:50051` (gRPC) `:8080` (HTTP) | `matchmaking-service/main.go` | Register/Login/Google OAuth, JoinMatchmaking, SubscribeToMatch, Referral, Device Token |
 | Quiz Engine | `:50052` | `quiz-service/main.go` | StreamGameEvents, SubmitAnswer, question selection, game loop |
-| Scoring | `:50053` | `scoring-service/main.go` | CalculateScore, GetLeaderboard |
-| Payment | `:8081` | `payment-service/main.go` | CreateOrder, VerifyPayment, GetStatus, GetHistory |
+| Scoring | `:50053` | `scoring-service/main.go` | CalculateScore, GetLeaderboard (capped for free users) |
+| Payment | `:8081` | `payment-service/main.go` | CreateOrder, VerifyPayment, Webhook, GetStatus, GetHistory |
+| Notification Worker | — (no port) | `notification-worker/main.go` | FCM push notifications, RabbitMQ consumers, cron scheduler |
 
 ---
 
@@ -68,6 +73,11 @@ RabbitMQ Exchange: sx (topic, durable)
 | Matchmaking | `matchmaking:pool`, `player:{id}`, `room:{id}:state`, `room:{id}:players`, `room:lock:{id}` | 30 min |
 | Quiz Engine | `room:{id}:questions`, `room:{id}:submitted:{round}`, `room:{id}:round:{n}:started_at`, `room:{id}:round:{n}:closed` | 30 min |
 | Scoring | `room:{id}:leaderboard`, `room:{id}:answers:{round}`, `room:{id}:correct_counts`, `room:{id}:response_sum`, `room:{id}:response_count` | 30 min |
+| User/Premium | `user:{id}:plan` → `free\|premium`, `user:{id}:daily_quota` → remaining games or "unlimited" | plan: 1 day, quota: end of day |
+| Referral | `referral:code:{code}` → `{userId}` | no TTL |
+| Streak | `user:{id}:streak` hash → `{current, longest, last_login}` | no TTL |
+
+Populated by `PopulateUserRedisKeys()` on every login (Google, email/password, register) and by `enforceQuotaAndIncrement()` on each matchmaking join.
 
 ---
 
@@ -106,6 +116,9 @@ All three operations execute atomically in a single Redis server round-trip.
 | `round-completed-queue` | `round.completed` | Quiz Engine | Queue binding + observability logging |
 | `match-finished-queue` | `match.finished` | Scoring Worker | Post-match processing hook |
 | `match-analytics-queue` | `match.finished` | Analytics Stub | Logs match analytics to stdout |
+| `notification-worker-queue` | `notification.*` | Notification Worker | Dispatches FCM push notifications |
+| `notification-match-queue` | `match.finished` | Notification Worker | Sends referral-conversion FCM notification |
+| `payment-success-queue` | `payment.success` | Payment Service | Published after Razorpay webhook captures a payment |
 
 All queues are durable (`durable=true`) and survive RabbitMQ restarts.
 The `answer-processing-queue` uses dead-letter routing: after 3 failed attempts the message is NACK'd to `answer-processing-dlq`.
@@ -263,13 +276,13 @@ Win streak is tracked in `GameNotifier._onRoundResult()` using
 | 9 | Timer sync server→client | ✅ | TimerSync every 1s with DeadlineMs |
 | 10 | Idempotent answer processing | ✅ | HSETNX + HEXISTS double guard |
 | 11 | PlayerJoined event broadcast | ✅ | Broadcast on StreamGameEvents subscription |
-| 12 | Late joiner / mid-match join | ⚠️ | Gets live stream from reconnection point; past events not replayed |
+| 12 | Late joiner / mid-match join | ✅ | Late joiner receives current question + TimerSync on connect |
 | 13 | Proper error handling | ✅ | gRPC status codes, ACK/NACK, try/catch in Flutter |
 | 14 | All proto RPCs implemented | ✅ | Register, Login, GoogleAuth, Join/Leave/Subscribe, Stream/Submit, Score/GetLeaderboard |
 | 15 | Docker includes all services | ✅ | mongo + redis + rabbitmq + 4 Go services, all with healthchecks |
 | 16 | Comprehensive seed data | ✅ | 60 questions + 6 test users |
 
-**Known limitation (item 12):** The `last_seen_round` field in `StreamRequest` proto is not used server-side to replay missed events. A reconnecting client gets the live stream from reconnection point but does not receive replayed past questions. Documented as a Phase 3 improvement.
+Late joiners now receive the current question + TimerSync immediately on connect, so they can participate in the active round without waiting for the next one.
 
 ---
 
@@ -314,7 +327,11 @@ See [google-auth.md](google-auth.md) for full setup and security details.
 
 ### Daily Quota
 
-Free users: **5 games/day**. Counter stored in SharedPreferences (`dq_used` + `dq_date`).
+Free users: **5 games/day**. Enforced server-side in `matchmaking-service/handlers/matchmaking.go` → `enforceQuotaAndIncrement()`.
+
+The server checks MongoDB `subscriptions` (premium bypass) then `users.daily_quiz_used` + `users.last_quiz_date` before adding to the matchmaking pool. Returns `codes.ResourceExhausted` if the daily limit is reached. The remaining quota is also mirrored to Redis (`user:{id}:daily_quota`) for observability.
+
+Flutter client tracks quota locally in SharedPreferences as a UI hint, but the server is the authoritative enforcer.
 
 **Where consumed:** `matchmaking_screen.dart → _onMatchFound()` calls
 `consumeDailyQuiz()` the moment a match is confirmed. Bonus games are consumed
@@ -441,3 +458,18 @@ cd flutter-app && flutter run
 make test              # Go tests
 make test-flutter      # Flutter tests (31 unit tests)
 ```
+
+---
+
+## Resolved Gaps (2026-04-13)
+
+All previously identified gaps have been fixed. See [GAPS_AND_PLAN.md](GAPS_AND_PLAN.md) for the full change log.
+
+| Gap | Resolution |
+|-----|-----------|
+| Daily quota server-side | `enforceQuotaAndIncrement()` in matchmaking checks MongoDB before pool join |
+| `payment-success-queue` | Payment service now publishes `payment.success` to RabbitMQ after webhook capture |
+| Redis observability keys | `PopulateUserRedisKeys()` called on every login — sets plan, quota, streak, referral keys |
+| MongoDB indexes | `mongo-init/init.js` creates indexes on all collections (users, questions, match_history, payments, subscriptions, device_tokens, referrals) |
+| Leaderboard cap | `GetLeaderboard()` in scoring-service caps to top 3 + own entry for free users |
+| Late joiner catch-up | `StreamGameEvents()` sends current question + TimerSync to non-first subscribers |

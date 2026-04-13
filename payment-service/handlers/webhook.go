@@ -16,14 +16,25 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// PaymentPublisher is the interface for publishing payment events to RabbitMQ.
+type PaymentPublisher interface {
+	PublishPaymentSuccess(event map[string]any) error
+}
+
 // WebhookHandler handles Razorpay webhook callbacks.
 type WebhookHandler struct {
-	db  *mongo.Database
-	cfg *Config
+	db        *mongo.Database
+	cfg       *Config
+	publisher PaymentPublisher
 }
 
 func NewWebhookHandler(db *mongo.Database, cfg *Config) *WebhookHandler {
 	return &WebhookHandler{db: db, cfg: cfg}
+}
+
+// SetPublisher attaches a RabbitMQ publisher for payment success events.
+func (h *WebhookHandler) SetPublisher(p PaymentPublisher) {
+	h.publisher = p
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -209,6 +220,22 @@ func (h *WebhookHandler) handlePaymentCaptured(w http.ResponseWriter, r *http.Re
 
 	log.Printf("Webhook: payment.captured processed — user=%s plan=%s expires=%s",
 		paymentDoc.UserID, paymentDoc.Plan, expiresAt.Format(time.RFC3339))
+
+	// Publish payment.success event to RabbitMQ (non-fatal if publisher unavailable)
+	if h.publisher != nil {
+		if pubErr := h.publisher.PublishPaymentSuccess(map[string]any{
+			"order_id":    entity.OrderID,
+			"payment_id":  entity.ID,
+			"user_id":     paymentDoc.UserID,
+			"plan":        paymentDoc.Plan,
+			"amount":      entity.Amount,
+			"captured_at": now.Format(time.RFC3339),
+		}); pubErr != nil {
+			log.Printf("Webhook: failed to publish payment.success event: %v", pubErr)
+		} else {
+			log.Printf("Webhook: payment.success event published to RabbitMQ")
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "payment processed"})
 }

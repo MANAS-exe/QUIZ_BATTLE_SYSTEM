@@ -396,8 +396,20 @@ print("✓ 30 SpeakX-style English questions inserted");
 
 // ── Create indexes ──────────────────────────────────────────
 db.users.createIndex({ username: 1 }, { unique: true });
+db.users.createIndex({ email: 1 }, { sparse: true });
 db.questions.createIndex({ difficulty: 1 });
+db.questions.createIndex({ topic: 1 });
 db.match_history.createIndex({ "players.userId": 1 });
+db.match_history.createIndex({ createdAt: -1 });
+
+// Payments & subscriptions
+db.payments.createIndex({ order_id: 1 }, { unique: true });
+db.payments.createIndex({ user_id: 1 });
+db.subscriptions.createIndex({ user_id: 1 });
+db.subscriptions.createIndex({ expires_at: 1 });
+
+// Device tokens index — fast lookup by user_id, unique so each user has one token
+db.device_tokens.createIndex({ user_id: 1 }, { unique: true });
 
 // Referral system indexes
 // sparse: true means documents WITHOUT referral_code (old users before the system)
@@ -409,8 +421,14 @@ db.users.createIndex({ referral_code: 1 }, { unique: true, sparse: true });
 db.referrals.createIndex({ referrer_id: 1 });
 db.referrals.createIndex({ referee_id: 1 }, { unique: true });
 
-print("✓ Indexes created (users.username unique, questions.difficulty, match_history.players.userId)");
-print("✓ Referral indexes created (users.referral_code unique sparse, referrals.referrer_id, referrals.referee_id unique)");
+print("✓ Indexes created:");
+print("  users: username (unique), email (sparse), referral_code (unique sparse)");
+print("  questions: difficulty, topic");
+print("  match_history: players.userId, createdAt");
+print("  payments: order_id (unique), user_id");
+print("  subscriptions: user_id, expires_at");
+print("  device_tokens: user_id (unique)");
+print("  referrals: referrer_id, referee_id (unique)");
 
 print("\n── Breakdown ──────────────────────────");
 ["easy","medium","hard"].forEach(d =>

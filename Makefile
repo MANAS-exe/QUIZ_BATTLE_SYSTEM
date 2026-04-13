@@ -41,6 +41,9 @@ run-scoring:
 run-payment:
 	cd payment-service && export $$(cat .env | xargs) && go run .
 
+run-notification-worker:
+	cd notification-worker && export $$(cat .env | xargs) && go run .
+
 # ── Tests ───────────────────────────────────────────────────────
 test:
 	cd shared && go test ./...

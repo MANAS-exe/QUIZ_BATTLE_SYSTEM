@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	goredis "github.com/gomodule/redigo/redis"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -102,6 +103,8 @@ type googleUserDoc struct {
 // alongside the gRPC-Web proxy.
 type GoogleAuthHandler struct {
 	users          *mongo.Collection
+	mongoDB        *mongo.Database
+	redisPool      *goredis.Pool
 	googleClientID string // GOOGLE_CLIENT_ID env var — used to verify `aud` claim
 }
 
@@ -112,8 +115,14 @@ func NewGoogleAuthHandler(mongoDB *mongo.Database) *GoogleAuthHandler {
 	}
 	return &GoogleAuthHandler{
 		users:          mongoDB.Collection("users"),
+		mongoDB:        mongoDB,
 		googleClientID: clientID,
 	}
+}
+
+// SetRedisPool attaches a Redis pool for populating observability keys on login.
+func (h *GoogleAuthHandler) SetRedisPool(pool *goredis.Pool) {
+	h.redisPool = pool
 }
 
 // ServeHTTP handles POST /auth/google
@@ -183,6 +192,9 @@ func (h *GoogleAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("✅ Google login — user: %s (%s) email: %s new: %v",
 		userDoc.Username, userID, userDoc.Email, isNew)
+
+	// Fire-and-forget: populate Redis observability keys
+	go PopulateUserRedisKeys(h.redisPool, h.mongoDB, userID)
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(googleAuthResponse{ //nolint:errcheck

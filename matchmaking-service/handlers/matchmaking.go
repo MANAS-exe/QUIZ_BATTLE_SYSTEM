@@ -10,6 +10,7 @@ import (
 
 	"github.com/gomodule/redigo/redis"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -452,17 +453,26 @@ func (h *MatchmakingHandler) enforceQuotaAndIncrement(ctx context.Context, userI
 		return nil
 	}
 	if subsCount > 0 {
-		// Premium user — no limit, skip quota check
+		// Premium user — no limit. Mirror status to Redis for observability.
+		conn := h.pool.Get()
+		conn.Do("SET", fmt.Sprintf("user:%s:daily_quota", userID), "unlimited", "EX", 86400) //nolint:errcheck
+		conn.Do("SET", fmt.Sprintf("user:%s:plan", userID), "premium", "EX", 86400)          //nolint:errcheck
+		conn.Close()
 		return nil
 	}
 
 	// 2. Look up the user's daily quota fields
+	oid, oidErr := primitive.ObjectIDFromHex(userID)
+	if oidErr != nil {
+		log.Printf("enforceQuota: invalid ObjectID %s: %v", userID, oidErr)
+		return nil // fail open
+	}
 	usersColl := h.mongoDB.Collection("users")
 	var userDoc struct {
 		DailyQuizUsed int    `bson:"daily_quiz_used"`
 		LastQuizDate  string `bson:"last_quiz_date"` // stored as "YYYY-MM-DD"
 	}
-	err = usersColl.FindOne(dbCtx, bson.M{"_id": userID}).Decode(&userDoc)
+	err = usersColl.FindOne(dbCtx, bson.M{"_id": oid}).Decode(&userDoc)
 	if err != nil && err != mongo.ErrNoDocuments {
 		log.Printf("enforceQuota: user lookup error for %s: %v", userID, err)
 		// Fail open
@@ -484,7 +494,7 @@ func (h *MatchmakingHandler) enforceQuotaAndIncrement(ctx context.Context, userI
 
 	// 3. Increment the counter (and update date) atomically
 	_, err = usersColl.UpdateOne(dbCtx,
-		bson.M{"_id": userID},
+		bson.M{"_id": oid},
 		bson.M{"$set": bson.M{
 			"last_quiz_date":  today,
 			"daily_quiz_used": usedToday + 1,
@@ -494,6 +504,16 @@ func (h *MatchmakingHandler) enforceQuotaAndIncrement(ctx context.Context, userI
 		log.Printf("enforceQuota: failed to increment daily_quiz_used for user %s: %v", userID, err)
 		// Fail open — don't block the user
 	}
+
+	// 4. Mirror remaining quota to Redis for observability (GET user:{id}:daily_quota)
+	remaining := 5 - (usedToday + 1)
+	if remaining < 0 {
+		remaining = 0
+	}
+	conn := h.pool.Get()
+	defer conn.Close()
+	quotaKey := fmt.Sprintf("user:%s:daily_quota", userID)
+	conn.Do("SET", quotaKey, remaining, "EX", 86400) //nolint:errcheck
 
 	return nil
 }

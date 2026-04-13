@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"quiz-battle/payment/handlers"
+	"quiz-battle/payment/rabbitmq"
 )
 
 func main() {
@@ -30,6 +31,16 @@ func main() {
 
 	db := mongoClient.Database("quizdb")
 
+	// ── RabbitMQ ──────────────────────────────────────────────
+	amqpURL := getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+	publisher, err := rabbitmq.NewPublisher(amqpURL)
+	if err != nil {
+		log.Printf("⚠️  RabbitMQ not available — payment events won't be published: %v", err)
+	} else {
+		defer publisher.Close()
+		log.Printf("✅ RabbitMQ connected: %s", amqpURL)
+	}
+
 	// ── Config ────────────────────────────────────────────────
 	cfg := &handlers.Config{
 		RazorpayKeyID:       getEnv("RAZORPAY_KEY_ID", ""),
@@ -40,6 +51,7 @@ func main() {
 	// ── Handlers ──────────────────────────────────────────────
 	paymentHandler := handlers.NewPaymentHandler(db, cfg)
 	webhookHandler := handlers.NewWebhookHandler(db, cfg)
+	webhookHandler.SetPublisher(publisher)
 
 	// ── Routes ────────────────────────────────────────────────
 	mux := http.NewServeMux()

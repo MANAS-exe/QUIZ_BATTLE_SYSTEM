@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Channel ID must match the one used in notification-worker/worker/fcm.go -->
+    <string name="default_notification_channel_id" translatable="false">quiz_battle_channel</string>
+    <string name="default_notification_channel_name" translatable="false">Quiz Battle</string>
+</resources>

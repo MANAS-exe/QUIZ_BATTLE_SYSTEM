@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'notification_service.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:grpc/grpc.dart';
 import 'package:http/http.dart' as http;
@@ -393,6 +395,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _loadLocalStats();
       await _syncPremiumFromServer();
       await _syncReferralFromServer();
+      _initNotifications();
       return null;
     } on PlatformException catch (e) {
       // iOS SDK throws PlatformException when GoogleService-Info.plist is
@@ -496,6 +499,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         await _loadLocalStats();
         await _syncPremiumFromServer();
         await _syncReferralFromServer();
+        _initNotifications();
         return null;
       }
       return res.message;
@@ -523,6 +527,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         await _loadLocalStats();
         await _syncPremiumFromServer();
         await _syncReferralFromServer();
+        _initNotifications();
         return null;
       }
       return res.message;
@@ -597,6 +602,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
   /// arrived since the last login (e.g., someone used the user's code while the
   /// app was already running).
   Future<void> refreshReferralData() => _syncReferralFromServer();
+
+  /// Fire-and-forget: registers the FCM device token with the backend.
+  /// Called after every successful login. Errors are non-fatal.
+  void _initNotifications() {
+    final token = state.token;
+    if (token == null) return;
+    NotificationService.instance.init(token: token).catchError((e) {
+      debugPrint('[NotificationService] init error: $e');
+    });
+  }
 
   Future<void> _syncReferralFromServer() async {
     final token = state.token;
@@ -857,6 +872,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   void logout() async {
     await _googleSignIn.signOut();
+    await NotificationService.instance.clearToken();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('google_id_token');
     await prefs.remove('saved_username');

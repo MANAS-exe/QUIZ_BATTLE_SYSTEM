@@ -110,6 +110,21 @@ services:
       rabbitmq: { condition: service_healthy }
     restart: unless-stopped
 
+  notification-worker:
+    build:
+      context: .
+      dockerfile: notification-worker/Dockerfile
+    container_name: quiz_notification_worker
+    env_file:
+      - notification-worker/.env
+    environment:
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      MONGO_URI: "mongodb://mongodb:27017"
+    depends_on:
+      mongodb:  { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+
   payment-service:
     build:
       context: .
@@ -120,10 +135,12 @@ services:
     environment:
       PORT: ":8081"
       MONGO_URI: "mongodb://mongodb:27017"
-      RAZORPAY_KEY_ID: "rzp_test_SceECQQiE4Heaf"
-      RAZORPAY_KEY_SECRET: "DOSsV7M9yanTk1JnEAeaQ3yN"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      RAZORPAY_KEY_ID: ""          # set your rzp_test_* key
+      RAZORPAY_KEY_SECRET: ""     # set your Razorpay secret
     depends_on:
-      mongodb: { condition: service_healthy }
+      mongodb:  { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     restart: unless-stopped
 
 volumes:

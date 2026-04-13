@@ -67,6 +67,7 @@ func main() {
 
 	// Register auth handler
 	authHandler := handlers.NewAuthHandler(mongoDB)
+	authHandler.SetRedisPool(redisPool)
 	authHandler.RegisterService(grpcServer)
 
 	// Register matchmaking handler
@@ -85,8 +86,11 @@ func main() {
 	)
 
 	googleAuthHandler := handlers.NewGoogleAuthHandler(mongoDB)
+	googleAuthHandler.SetRedisPool(redisPool)
 	leaderboardHandler := handlers.NewLeaderboardHTTPHandler(mongoDB)
 	referralHandler := handlers.NewReferralHandler(mongoDB)
+	referralHandler.SetRedisPool(redisPool)
+	deviceTokenHandler := handlers.NewDeviceTokenHandler(mongoDB)
 
 	mux := http.NewServeMux()
 	mux.Handle("/leaderboard", leaderboardHandler)
@@ -156,6 +160,19 @@ func main() {
 			return
 		}
 		referralHandler.History(w, r)
+	})
+
+	// ── Device token registration ─────────────────────────────────
+	// POST /device/token — stores FCM token for the authenticated user.
+	mux.HandleFunc("/device/token", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		deviceTokenHandler.ServeHTTP(w, r)
 	})
 
 	go func() {

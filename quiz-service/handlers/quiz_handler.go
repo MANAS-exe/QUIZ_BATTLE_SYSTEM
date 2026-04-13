@@ -36,6 +36,12 @@ type gameRoom struct {
 	active      map[string]bool // tracks who is actively playing (not forfeited)
 	startOnce   sync.Once
 	totalRounds int
+
+	// Late-joiner catch-up: the game loop stores the current question event
+	// so late subscribers can be sent the active round immediately.
+	currentQuestion *quiz.GameEvent // latest QuestionBroadcast event
+	currentRound    int
+	roundDeadlineMs int64 // absolute unix ms when current round ends
 }
 
 func (r *gameRoom) addSub(ch chan *quiz.GameEvent, userID string) {
@@ -90,6 +96,22 @@ func (r *gameRoom) lastActiveUserID() string {
 		return uid
 	}
 	return ""
+}
+
+// setCurrentQuestion stores the latest question event for late-joiner catch-up.
+func (r *gameRoom) setCurrentQuestion(event *quiz.GameEvent, round int, deadlineMs int64) {
+	r.mu.Lock()
+	r.currentQuestion = event
+	r.currentRound = round
+	r.roundDeadlineMs = deadlineMs
+	r.mu.Unlock()
+}
+
+// getCurrentQuestion returns the current question event for late-joiner catch-up.
+func (r *gameRoom) getCurrentQuestion() (*quiz.GameEvent, int, int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.currentQuestion, r.currentRound, r.roundDeadlineMs
 }
 
 func (r *gameRoom) broadcast(event *quiz.GameEvent) {
@@ -375,9 +397,37 @@ func (h *QuizServiceHandler) StreamGameEvents(req *quiz.StreamRequest, stream gr
 	})
 
 	// The first subscriber triggers the game loop (subsequent ones just receive)
+	isFirstSub := false
 	room.startOnce.Do(func() {
+		isFirstSub = true
 		go h.runGameLoop(roomID, room)
 	})
+
+	// ── Late-joiner catch-up ─────────────────────────────────
+	// If the game loop already started (not the first subscriber),
+	// send the current question + timer so the player isn't blind.
+	if !isFirstSub {
+		if qEvent, _, deadlineMs := room.getCurrentQuestion(); qEvent != nil && deadlineMs > time.Now().UnixMilli() {
+			// Send current question
+			if err := stream.Send(qEvent); err != nil {
+				return err
+			}
+			// Send current timer state
+			if err := stream.Send(&quiz.GameEvent{
+				Event: &quiz.GameEvent_TimerSync{
+					TimerSync: &quiz.TimerSync{
+						RoundNumber:  qEvent.GetQuestion().RoundNumber,
+						ServerTimeMs: time.Now().UnixMilli(),
+						DeadlineMs:   deadlineMs,
+					},
+				},
+			}); err != nil {
+				return err
+			}
+			log.Printf("📋 Late-joiner %s caught up: round %d, %dms remaining",
+				req.UserId, qEvent.GetQuestion().RoundNumber, deadlineMs-time.Now().UnixMilli())
+		}
+	}
 
 	ctx := stream.Context()
 	for {
@@ -437,6 +487,10 @@ func (h *QuizServiceHandler) runGameLoop(roomID string, room *gameRoom) {
 		log.Printf("🎯 Room %s: starting round %d/%d (%d active players)", roomID, round, room.totalRounds, active)
 
 		broadcastFn := func(event *quiz.GameEvent) {
+			// Intercept QuestionBroadcast to store for late-joiner catch-up
+			if q := event.GetQuestion(); q != nil {
+				room.setCurrentQuestion(event, round, q.DeadlineMs)
+			}
 			room.broadcast(event)
 		}
 
